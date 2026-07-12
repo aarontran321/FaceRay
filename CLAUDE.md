@@ -119,8 +119,15 @@ the current workstream, built on top of the CLI core without restructuring it:
   EOF / SIGTERM) + Rust `sidecar.rs` (spawn on setup, forward `send_control` to
   stdin, relay stdout as `sidecar://status` events, kill on exit). Sidecar has
   `--synthetic` / `--image` sources for camera-free testing.
-- **D-Task 3** (next) — TypeScript control panel (light-vector sliders, effect
-  toggles) dispatching through the existing typed IPC client.
+- **D-Task 3** (done) — TypeScript control panel: `src/ui.ts` builds the widgets
+  (light-vector + intensity/ambient sliders, relight/gaze switches, blur
+  segmented control); `src/main.ts` mounts it, dispatches debounced
+  `ControlState` via the typed IPC client, and shows live sidecar status from
+  `sidecar://status` events. Framework-free DOM, macOS-styled.
+
+Phase 1 of the desktop migration (D-Tasks 1–3) is complete. Next up would be
+wiring a real preview surface and packaging a signed `.app` (PyInstaller sidecar
+via `build_sidecar.sh --release`).
 
 ## Testing
 

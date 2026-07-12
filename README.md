@@ -57,7 +57,8 @@ faceray/                  # Python CV core (data plane) + CLI
 ├── requirements-gpu.txt  # optional CUDA/CuPy GPU acceleration
 └── requirements-dev.txt  # pytest + pyinstaller (sidecar freezing)
 src/                      # desktop control-panel frontend (Vite + TypeScript)
-│   ├── main.ts           # app-shell bootstrap
+│   ├── main.ts           # bootstrap: mount panel, dispatch control, status events
+│   ├── ui.ts             # control-panel widgets (sliders / switches / segmented)
 │   └── ipc.ts            # typed control-plane client (mirrors Rust ControlState)
 src-tauri/                # Tauri 2.0 desktop shell (Rust; window + process mgmt)
 │   ├── src/{main,lib,ipc}.rs   # entry, command surface, ControlState contract
@@ -162,11 +163,24 @@ status events on stdout:
   | python -m faceray.sidecar_entry --synthetic --no-sink --status-every 30
 ```
 
-Status: **Task 1 + Task 2 complete** — Tauri core, IPC contract, buildable
-frontend, the Python sidecar (stdin control, graceful shutdown on parent
-death), and Rust stdio plumbing (spawn / forward / kill). Verified via
-`cargo check` + `cargo test`, `vite build`, and a 30-test `pytest` suite. Task 3
-(control-panel widgets) is next.
+Status: **Phase 1 complete (Tasks 1–3).** Tauri core + IPC contract, the Python
+sidecar (stdin control, graceful shutdown on parent death) with Rust stdio
+plumbing (spawn / forward / kill), and the TypeScript control panel — light-vector
+and intensity/ambient sliders, relight/gaze switches, and a blur segmented
+control that dispatch debounced `ControlState` updates through the typed IPC
+client. Verified via `cargo check` + `cargo test`, `vite build`, a 30-test
+`pytest` suite, and interactive UI checks.
+
+The control panel (light sliders, effect switches, blur segmented control):
+
+```
+┌ FaceRay ───────────────── 30 fps · face ✓ ┐
+│ LIGHT                                      │
+│   Direction X / Y / Z   Intensity  Ambient │
+│ EFFECTS                                     │
+│   Relighting ●   Gaze ●   Blur [Off|Face|Bg]│
+└────────────────────────────────────────────┘
+```
 
 ## Testing
 

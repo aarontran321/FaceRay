@@ -1,24 +1,30 @@
-/* macOS-native-leaning base styling. Task 3 layers the control widgets on top. */
+/* macOS-native-leaning control panel. */
 
 :root {
   color-scheme: light dark;
-  --bg: #f5f5f7;
-  --panel: rgba(255, 255, 255, 0.7);
+  --bg: #ececee;
+  --panel: rgba(255, 255, 255, 0.72);
+  --group: rgba(255, 255, 255, 0.55);
   --text: #1d1d1f;
   --muted: #6e6e73;
   --accent: #0a84ff;
+  --track: rgba(0, 0, 0, 0.16);
   --hairline: rgba(0, 0, 0, 0.1);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
     system-ui, sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1e1e1e;
-    --panel: rgba(44, 44, 46, 0.72);
+    --bg: #1c1c1e;
+    --panel: rgba(38, 38, 40, 0.72);
+    --group: rgba(58, 58, 60, 0.5);
     --text: #f5f5f7;
     --muted: #98989d;
+    --track: rgba(255, 255, 255, 0.2);
     --hairline: rgba(255, 255, 255, 0.12);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 }
 
@@ -36,6 +42,7 @@ body {
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+  font-size: 13px;
 }
 
 #app {
@@ -44,60 +51,179 @@ body {
   height: 100vh;
 }
 
+/* ── Title bar ──────────────────────────────────────────────────────── */
 .titlebar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 16px;
-  /* Leave room for the traffic-light buttons under the transparent titlebar. */
-  padding-left: 78px;
+  gap: 12px;
+  padding: 10px 16px 10px 78px; /* clear the macOS traffic lights */
   border-bottom: 1px solid var(--hairline);
   user-select: none;
+  flex: 0 0 auto;
 }
 
 .brand {
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
-.bridge {
+.status-line {
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.bridge--tauri {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  color: var(--accent);
-}
-
-.bridge--browser {
-  background: color-mix(in srgb, var(--muted) 24%, transparent);
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* ── Panel + groups ─────────────────────────────────────────────────── */
 .panel {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
   padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.hint {
-  margin: 0 0 12px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.state {
-  margin: 0;
-  padding: 12px;
-  border-radius: 10px;
-  background: var(--panel);
+.group {
+  background: var(--group);
   border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 6px 14px 12px;
+}
+
+.group-title {
+  margin: 8px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* ── Rows ───────────────────────────────────────────────────────────── */
+.row {
+  padding: 8px 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.row:first-of-type {
+  border-top: none;
+}
+
+.row--inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.row-label {
+  font-weight: 500;
+}
+
+.row-value {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
   font-family: "SF Mono", ui-monospace, Menlo, monospace;
   font-size: 12px;
-  line-height: 1.5;
-  overflow-x: auto;
+}
+
+/* ── Slider ─────────────────────────────────────────────────────────── */
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--track);
+  outline: none;
+  margin: 6px 0 2px;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--shadow);
+  border: 0.5px solid rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+
+.slider:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* ── Switch ─────────────────────────────────────────────────────────── */
+.switch {
+  position: relative;
+  width: 40px;
+  height: 24px;
+  border-radius: 999px;
+  border: none;
+  background: var(--track);
+  cursor: pointer;
+  transition: background 0.18s ease;
+  flex: 0 0 auto;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--shadow);
+  transition: transform 0.18s ease;
+}
+
+.switch--on {
+  background: var(--accent);
+}
+
+.switch--on::after {
+  transform: translateX(16px);
+}
+
+/* ── Segmented control ──────────────────────────────────────────────── */
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--track);
+}
+
+.segmented__btn {
+  flex: 1;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-transform: capitalize;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.segmented__btn--on {
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  font-weight: 600;
 }
