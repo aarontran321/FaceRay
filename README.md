@@ -52,8 +52,10 @@ faceray/                  # Python CV core (data plane) + CLI
 ├── drivers/
 │   └── virtual_sink.py   # pyvirtualcam bridge to OS video loops
 ├── app.py                # CLI orchestration loop and OpenCV UI
+├── sidecar_entry.py      # Tauri sidecar: stdio-controlled headless pipeline
 ├── requirements.txt      # core runtime (cross-platform, CPU path)
-└── requirements-gpu.txt  # optional CUDA/CuPy GPU acceleration
+├── requirements-gpu.txt  # optional CUDA/CuPy GPU acceleration
+└── requirements-dev.txt  # pytest + pyinstaller (sidecar freezing)
 src/                      # desktop control-panel frontend (Vite + TypeScript)
 │   ├── main.ts           # app-shell bootstrap
 │   └── ipc.ts            # typed control-plane client (mirrors Rust ControlState)
@@ -140,20 +142,31 @@ unchanged as a **Tauri sidecar**. The design enforces a strict split:
 
 `ControlState` is defined once per layer and kept in lockstep:
 [`src-tauri/src/ipc.rs`](src-tauri/src/ipc.rs) ↔ [`src/ipc.ts`](src/ipc.ts) ↔
-(Task 2) `faceray/sidecar_entry.py`.
+[`faceray/sidecar_entry.py`](faceray/sidecar_entry.py) (`SidecarControl`).
 
 ```bash
 # One-time: build the sidecar the desktop app spawns (dev shim -> repo venv)
 ./scripts/build_sidecar.sh
 
-# Run the native window (Rust + Vite dev server)
+# Run the native window (Rust + Vite dev server); Tauri spawns the sidecar
 npm install
 npm run tauri dev
 ```
 
-Status: **Task 1 complete** — Tauri core, IPC contract, and buildable frontend
-(`cargo check` + `cargo test` + `vite build` all green). Task 2 (Python sidecar
-+ stdio plumbing) and Task 3 (control-panel widgets) are next.
+The sidecar is independently runnable and testable without a camera or the
+desktop window — it accepts one JSON `ControlState` per line on stdin and emits
+status events on stdout:
+
+```bash
+{ echo '{"blur_mode":"background","intensity":1.2}'; sleep 3; } \
+  | python -m faceray.sidecar_entry --synthetic --no-sink --status-every 30
+```
+
+Status: **Task 1 + Task 2 complete** — Tauri core, IPC contract, buildable
+frontend, the Python sidecar (stdin control, graceful shutdown on parent
+death), and Rust stdio plumbing (spawn / forward / kill). Verified via
+`cargo check` + `cargo test`, `vite build`, and a 30-test `pytest` suite. Task 3
+(control-panel widgets) is next.
 
 ## Testing
 

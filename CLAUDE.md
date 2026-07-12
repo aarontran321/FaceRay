@@ -47,7 +47,7 @@ tests/                  # pytest suite for pure relighter/modifier math
   TypeScript (`src/`) is presentation only. Video frames never cross the IPC
   boundary — only the scalar `ControlState` payload does. Keep the three
   `ControlState` mirrors in sync: `src-tauri/src/ipc.rs` ↔ `src/ipc.ts` ↔
-  `faceray/sidecar_entry.py` (Task 2). Control transport is **stdio** (Tauri
+  `faceray/sidecar_entry.py` (`SidecarControl`). Control transport is **stdio** (Tauri
   manages the sidecar lifecycle and kills it on exit — no orphaned webcam
   hooks); see the desktop-app section in README.md.
 
@@ -114,9 +114,13 @@ the current workstream, built on top of the CLI core without restructuring it:
 
 - **D-Task 1** (done) — Tauri core: `src-tauri/` Rust wrapper, `ControlState`
   IPC contract, buildable Vite/TS shell, `build_sidecar.sh`.
-- **D-Task 2** (next) — `faceray/sidecar_entry.py` (non-blocking stdin JSON
-  reads, graceful shutdown on parent death) + Rust sidecar spawn/stdin plumbing.
-- **D-Task 3** — TypeScript control panel (light-vector sliders, effect toggles).
+- **D-Task 2** (done) — `faceray/sidecar_entry.py` (`SidecarControl`,
+  non-blocking stdin JSON reads via a daemon thread, graceful shutdown on stdin
+  EOF / SIGTERM) + Rust `sidecar.rs` (spawn on setup, forward `send_control` to
+  stdin, relay stdout as `sidecar://status` events, kill on exit). Sidecar has
+  `--synthetic` / `--image` sources for camera-free testing.
+- **D-Task 3** (next) — TypeScript control panel (light-vector sliders, effect
+  toggles) dispatching through the existing typed IPC client.
 
 ## Testing
 

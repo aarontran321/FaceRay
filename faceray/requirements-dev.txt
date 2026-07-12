@@ -1,0 +1,10 @@
+# FaceRay development / build tooling (not needed at runtime).
+#
+#     pip install -r faceray/requirements-dev.txt
+#
+# pytest      — unit + sidecar integration suite (tests/).
+# pyinstaller — freezes faceray/sidecar_entry.py into the standalone
+#               `faceray_backend` binary Tauri bundles (scripts/build_sidecar.sh
+#               --release).
+pytest>=8.0.0
+pyinstaller>=6.0.0
