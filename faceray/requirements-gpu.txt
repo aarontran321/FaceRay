@@ -1,0 +1,10 @@
+# FaceRay optional GPU acceleration (Feature A relighting on CUDA via CuPy).
+#
+# NVIDIA GPU + CUDA 12.x runtime required. Not available on macOS (no CUDA).
+# The app degrades gracefully to the NumPy path when this is absent, so this
+# file is purely opt-in:
+#
+#     pip install -r faceray/requirements-gpu.txt
+#
+# Pick the wheel matching your local CUDA runtime (cupy-cuda11x for CUDA 11.x).
+cupy-cuda12x>=12.0.0

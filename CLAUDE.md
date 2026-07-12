@@ -18,13 +18,17 @@ first for the architecture diagram and algorithm descriptions.
 ```
 faceray/
 ├── core/
-│   ├── tracker.py     # MediaPipe Face Mesh & 3D landmark extraction
+│   ├── tracker.py     # MediaPipe Face Landmarker (Tasks) & 3D landmark extraction
 │   ├── relighter.py   # CUDA/CuPy Lambertian shading & surface normals
 │   └── modifier.py    # Gaze correction & Gaussian blur masks
 ├── drivers/
 │   └── virtual_sink.py # pyvirtualcam bridge to OS video loops
 ├── app.py              # Orchestration loop and OpenCV UI
-└── requirements.txt
+├── requirements.txt    # core runtime (cross-platform, CPU path)
+└── requirements-gpu.txt # optional CUDA/CuPy GPU acceleration
+scripts/
+└── capture_selfcheck.py # headless one-frame pipeline check -> montage PNG
+tests/                  # pytest suite for pure relighter/modifier math
 ```
 
 **Strict module boundaries — do not violate these:**
@@ -62,15 +66,26 @@ changing its shape.
 
 ## Environment notes
 
-- This dev machine does **not** have a real Python interpreter installed
-  (only the Windows Store stub) and does not have MediaPipe / CuPy /
-  pyvirtualcam installed. Code here has been written carefully but **not
-  executed** — treat "should work" claims with appropriate skepticism until
-  verified on a machine with a real environment.
+- The core pipeline **has been executed and verified** on macOS / Python 3.13
+  with a `.venv` (`python -m venv .venv`): imports, unit tests, and a full
+  tracker→relighter→modifier run against a real face image all pass. The live
+  webcam + virtual-cam legs still depend on host hardware/permissions (see
+  below).
+- **MediaPipe Tasks migration:** the wheels that ship Python 3.13 support
+  (mediapipe ≥ 0.10.30) dropped the legacy `mediapipe.solutions` API, so
+  `tracker.py` targets the Tasks `FaceLandmarker`. It needs the
+  `face_landmarker.task` model bundle, which `ensure_model()` downloads once to
+  `~/.cache/faceray/` (override via `FACERAY_MODEL_PATH` / `FACERAY_CACHE_DIR`).
+  The `FaceLandmarks` contract is unchanged, so `relighter`/`modifier`/`app`
+  were untouched.
+- On macOS, `cv2.VideoCapture` needs the host terminal to hold Camera
+  permission (System Settings → Privacy & Security → Camera); non-GUI processes
+  are denied silently rather than prompted.
 - A virtual-camera backend is required to actually output to Discord/Zoom/Meet:
   OBS Virtual Camera (Windows/macOS) or `v4l2loopback` (Linux).
-- `cupy-cuda12x` in `requirements.txt` is optional — only needed for the GPU
-  shading path; everything degrades gracefully to NumPy without it.
+- GPU deps live in `requirements-gpu.txt` (`cupy-cuda12x`), separate from the
+  core `requirements.txt` because they can't install without a CUDA runtime
+  (e.g. on macOS). Everything degrades gracefully to NumPy without them.
 
 ## Milestone plan (for context on ordering)
 
@@ -85,8 +100,12 @@ build on top of this, not restructure it, unless explicitly requested.
 
 ## Testing
 
-No test suite exists yet. There is no way to run/verify the app on this
-machine (see Environment notes). If you add tests, prefer testing the pure
-math in `core/relighter.py` (normal/shading computation) and `core/modifier.py`
-(blur mask geometry) with synthetic landmark arrays, since those don't require
-a real camera or virtual-cam backend.
+A `pytest` suite lives in `tests/` (`python -m pytest tests/ -q`). It exercises
+the pure math in `core/relighter.py` (normal/shading computation) and
+`core/modifier.py` (blur mask geometry, gaze bounds) with synthetic landmark
+arrays from `tests/conftest.py::make_landmarks`, so it needs no real camera or
+virtual-cam backend. Keep new pure-math logic covered here.
+
+For a real capture→process check without a live window, run
+`python -m scripts.capture_selfcheck --out selfcheck.png` (needs a webcam +
+Camera permission); it writes a labelled before/after montage.

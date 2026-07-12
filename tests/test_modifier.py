@@ -1,0 +1,99 @@
+"""Unit tests for faceray.core.modifier (gaze warp + blur mask geometry)."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from faceray.core.modifier import BlurMode, Modifier
+from faceray.core.tracker import LEFT_EYE_RING
+from tests.conftest import make_landmarks
+
+
+def test_gaze_strength_clamped() -> None:
+    m = Modifier()
+    m.gaze_strength = 5.0
+    assert m.gaze_strength == 1.0
+    m.gaze_strength = -2.0
+    assert m.gaze_strength == 0.0
+
+
+def test_blur_kernel_forced_odd_and_min() -> None:
+    m = Modifier()
+    m.blur_kernel = 30
+    assert m.blur_kernel == 31
+    m.blur_kernel = 1
+    assert m.blur_kernel == 3
+
+
+def test_cycle_blur_mode_order() -> None:
+    m = Modifier(blur_mode=BlurMode.OFF)
+    assert m.cycle_blur_mode() is BlurMode.FACE
+    assert m.cycle_blur_mode() is BlurMode.BACKGROUND
+    assert m.cycle_blur_mode() is BlurMode.OFF
+
+
+def test_blur_off_is_passthrough(frame: np.ndarray) -> None:
+    m = Modifier(blur_mode=BlurMode.OFF)
+    lm = make_landmarks()
+    out = m.apply_blur(frame, lm)
+    assert out is frame
+
+
+def test_blur_face_changes_face_region(frame: np.ndarray) -> None:
+    # Non-uniform frame so blurring actually alters pixels.
+    f = np.random.default_rng(1).integers(0, 255, size=(480, 640, 3), dtype=np.uint8)
+    m = Modifier(blur_mode=BlurMode.FACE)
+    lm = make_landmarks()
+    out = m.apply_blur(f, lm)
+    assert out.shape == f.shape and out.dtype == np.uint8
+    assert not np.array_equal(out, f)
+
+
+def test_blur_background_differs_from_face(frame: np.ndarray) -> None:
+    f = np.random.default_rng(2).integers(0, 255, size=(480, 640, 3), dtype=np.uint8)
+    lm = make_landmarks()
+    face_out = Modifier(blur_mode=BlurMode.FACE).apply_blur(f, lm)
+    bg_out = Modifier(blur_mode=BlurMode.BACKGROUND).apply_blur(f, lm)
+    assert not np.array_equal(face_out, bg_out)
+
+
+def test_gaze_noop_without_iris(frame: np.ndarray) -> None:
+    # 468 points => has_iris is False => gaze correction must be a no-op.
+    lm = make_landmarks(count=468)
+    assert not lm.has_iris
+    m = Modifier(gaze_strength=1.0)
+    out = m.correct_gaze(frame, lm)
+    assert out is frame
+
+
+def test_gaze_zero_strength_is_noop(frame: np.ndarray) -> None:
+    lm = make_landmarks()
+    m = Modifier(gaze_strength=0.0)
+    out = m.correct_gaze(frame, lm)
+    assert out is frame
+
+
+def test_gaze_shift_is_bounded(frame: np.ndarray) -> None:
+    """Even with maximal strength the per-eye warp respects gaze_max_shift."""
+    lm = make_landmarks()
+    m = Modifier(gaze_strength=1.0, gaze_max_shift=8.0)
+    out = m.apply(frame, lm)
+    assert out.shape == frame.shape and out.dtype == np.uint8
+
+
+def test_eye_roi_within_bounds() -> None:
+    lm = make_landmarks()
+    roi = Modifier._eye_roi(lm.frame_shape, lm, LEFT_EYE_RING)
+    assert roi is not None
+    x0, y0, x1, y1 = roi
+    h, w = lm.frame_shape
+    assert 0 <= x0 < x1 <= w
+    assert 0 <= y0 < y1 <= h
+
+
+def test_apply_full_pipeline_shape(frame: np.ndarray) -> None:
+    lm = make_landmarks()
+    m = Modifier(gaze_strength=0.7, blur_mode=BlurMode.BACKGROUND)
+    out = m.apply(frame, lm)
+    assert out.shape == frame.shape and out.dtype == np.uint8

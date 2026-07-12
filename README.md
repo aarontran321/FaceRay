@@ -17,7 +17,7 @@ resident on the GPU and minimizing host↔device copies.
 [Raw Webcam Frame]           cv2.VideoCapture
         │
         ▼
-core/tracker.py      →  MediaPipe Face Mesh: 468 dense + 10 iris 3D landmarks
+core/tracker.py      →  MediaPipe Face Landmarker (Tasks): 468 dense + 10 iris 3D landmarks
         │
         ▼
 core/relighter.py    →  Surface normals → Lambertian N·L shading (CuPy/CUDA)
@@ -46,13 +46,17 @@ drivers/virtual_sink.py  →  RGB bytes → system virtual camera (pyvirtualcam)
 ```
 faceray/
 ├── core/
-│   ├── tracker.py        # MediaPipe Face Mesh & 3D landmark extraction
+│   ├── tracker.py        # MediaPipe Face Landmarker (Tasks) & 3D landmark extraction
 │   ├── relighter.py      # CUDA/CuPy Lambertian shading & surface normals
 │   └── modifier.py       # Gaze correction & Gaussian blur masks
 ├── drivers/
 │   └── virtual_sink.py   # pyvirtualcam bridge to OS video loops
 ├── app.py                # Orchestration loop and OpenCV UI
-└── requirements.txt
+├── requirements.txt      # core runtime (cross-platform, CPU path)
+└── requirements-gpu.txt  # optional CUDA/CuPy GPU acceleration
+scripts/
+└── capture_selfcheck.py  # headless one-frame pipeline check -> montage PNG
+tests/                    # pytest suite for the pure relighter/modifier math
 ```
 
 The layers are strictly decoupled: `core` engines never touch the driver, and
@@ -60,7 +64,7 @@ the driver never imports the math engines.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10–3.13 (verified on 3.13)
 - A webcam
 - A virtual-camera backend:
   - **Windows / macOS** — OBS Virtual Camera (ships with OBS Studio ≥ 26.1)
@@ -68,14 +72,28 @@ the driver never imports the math engines.
 - **Optional:** an NVIDIA GPU with a CUDA 12.x runtime for the CuPy shading path.
   Without it FaceRay transparently falls back to NumPy on the CPU.
 
+> **MediaPipe Tasks model.** `core/tracker.py` uses the MediaPipe Face
+> Landmarker (Tasks API). On first run it downloads the `face_landmarker.task`
+> bundle (~3.6 MB) into `~/.cache/faceray/`. Override the location with
+> `FACERAY_MODEL_PATH` (explicit file) or `FACERAY_CACHE_DIR` (directory), or
+> pre-place the file for fully offline use.
+
 ## Install
 
 ```bash
-pip install -r faceray/requirements.txt
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r faceray/requirements.txt             # core, CPU path — all platforms
 ```
 
-> `cupy-cuda12x` is optional — remove it if you have no CUDA 12 GPU; the
-> relighter automatically uses the NumPy backend.
+Optional GPU acceleration (NVIDIA + CUDA 12.x only; not available on macOS):
+
+```bash
+pip install -r faceray/requirements-gpu.txt         # adds cupy-cuda12x
+```
+
+> The GPU dependency lives in a separate file because it cannot install without
+> a CUDA runtime. The relighter automatically uses the NumPy backend when CuPy
+> is absent, so the core install is fully functional on its own.
 
 ## Run
 
@@ -98,6 +116,22 @@ Zoom, or Meet.
 | `[` / `]` | orbit light left / right | `-` / `=` | dim / brighten light |
 | `m` | mirror preview | `h` | toggle HUD |
 
+## Testing
+
+Run the pure-math unit suite (no camera or virtual-cam backend required):
+
+```bash
+pip install pytest
+python -m pytest tests/ -q
+```
+
+To sanity-check the full capture→process path against your own webcam and get a
+labelled before/after montage without opening a live window:
+
+```bash
+python -m scripts.capture_selfcheck --out selfcheck.png
+```
+
 ## Development status
 
 Built incrementally per the milestone plan:
@@ -105,6 +139,10 @@ Built incrementally per the milestone plan:
 - **Phase 1** — core pipeline: webcam → `virtual_sink`.
 - **Phase 2** — tracking: `core/tracker.py`.
 - **Phase 3** — GPU math & rendering: `core/relighter.py`, `core/modifier.py`.
+
+All three phases are implemented and the core pipeline has been executed and
+verified end-to-end on macOS / Python 3.13 (MediaPipe Tasks Face Landmarker,
+NumPy CPU shading path) against a real face image.
 
 ## License
 
