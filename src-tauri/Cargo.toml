@@ -1,0 +1,31 @@
+[package]
+name = "faceray"
+version = "0.1.0"
+description = "FaceRay desktop shell: control plane for the Python CV sidecar."
+authors = ["Aaron Tran"]
+edition = "2021"
+rust-version = "1.77.2"
+
+# The window/orchestration logic lives in a library crate so it can be shared
+# between the desktop binary (main.rs) and any future mobile entry point.
+[lib]
+name = "faceray_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# Process management for the bundled Python sidecar (spawn + lifecycle).
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Smaller, faster release binaries for a desktop app that ships a webview.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

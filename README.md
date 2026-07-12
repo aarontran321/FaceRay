@@ -44,18 +44,26 @@ drivers/virtual_sink.py  →  RGB bytes → system virtual camera (pyvirtualcam)
 ## Project structure
 
 ```
-faceray/
+faceray/                  # Python CV core (data plane) + CLI
 ├── core/
 │   ├── tracker.py        # MediaPipe Face Landmarker (Tasks) & 3D landmark extraction
 │   ├── relighter.py      # CUDA/CuPy Lambertian shading & surface normals
 │   └── modifier.py       # Gaze correction & Gaussian blur masks
 ├── drivers/
 │   └── virtual_sink.py   # pyvirtualcam bridge to OS video loops
-├── app.py                # Orchestration loop and OpenCV UI
+├── app.py                # CLI orchestration loop and OpenCV UI
 ├── requirements.txt      # core runtime (cross-platform, CPU path)
 └── requirements-gpu.txt  # optional CUDA/CuPy GPU acceleration
+src/                      # desktop control-panel frontend (Vite + TypeScript)
+│   ├── main.ts           # app-shell bootstrap
+│   └── ipc.ts            # typed control-plane client (mirrors Rust ControlState)
+src-tauri/                # Tauri 2.0 desktop shell (Rust; window + process mgmt)
+│   ├── src/{main,lib,ipc}.rs   # entry, command surface, ControlState contract
+│   ├── capabilities/     # scoped permissions (sidecar spawn)
+│   └── tauri.conf.json   # window + bundled faceray_backend sidecar config
 scripts/
-└── capture_selfcheck.py  # headless one-frame pipeline check -> montage PNG
+├── capture_selfcheck.py  # headless one-frame pipeline check -> montage PNG
+└── build_sidecar.sh      # build the target-triple Tauri sidecar (dev shim / PyInstaller)
 tests/                    # pytest suite for the pure relighter/modifier math
 ```
 
@@ -115,6 +123,37 @@ Zoom, or Meet.
 | `g` | toggle gaze correction | `b` | cycle blur (off / face / background) |
 | `[` / `]` | orbit light left / right | `-` / `=` | dim / brighten light |
 | `m` | mirror preview | `h` | toggle HUD |
+
+## Desktop app (Tauri 2.0) — in progress
+
+A native macOS desktop shell is being built on **Tauri 2.0** (Rust window +
+process management, TypeScript control panel) while the Python CV core is reused
+unchanged as a **Tauri sidecar**. The design enforces a strict split:
+
+- **Data plane** — the video frame loop (`VideoCapture → faceray.core →
+  pyvirtualcam`) stays entirely inside the Python sidecar. No frame bytes ever
+  cross the IPC boundary, so UI activity can never stall the pipeline.
+- **Control plane** — the UI sends only lightweight JSON control state (light
+  vector, effect toggles) to the sidecar over **stdio**. Tauri owns the child
+  process lifecycle and terminates it on app exit, preventing orphaned webcam
+  hooks.
+
+`ControlState` is defined once per layer and kept in lockstep:
+[`src-tauri/src/ipc.rs`](src-tauri/src/ipc.rs) ↔ [`src/ipc.ts`](src/ipc.ts) ↔
+(Task 2) `faceray/sidecar_entry.py`.
+
+```bash
+# One-time: build the sidecar the desktop app spawns (dev shim -> repo venv)
+./scripts/build_sidecar.sh
+
+# Run the native window (Rust + Vite dev server)
+npm install
+npm run tauri dev
+```
+
+Status: **Task 1 complete** — Tauri core, IPC contract, and buildable frontend
+(`cargo check` + `cargo test` + `vite build` all green). Task 2 (Python sidecar
++ stdio plumbing) and Task 3 (control-panel widgets) are next.
 
 ## Testing
 

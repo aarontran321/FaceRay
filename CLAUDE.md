@@ -16,18 +16,24 @@ first for the architecture diagram and algorithm descriptions.
 ## Repository layout
 
 ```
-faceray/
+faceray/                # Python CV core (data plane) + CLI
 ├── core/
 │   ├── tracker.py     # MediaPipe Face Landmarker (Tasks) & 3D landmark extraction
 │   ├── relighter.py   # CUDA/CuPy Lambertian shading & surface normals
 │   └── modifier.py    # Gaze correction & Gaussian blur masks
 ├── drivers/
 │   └── virtual_sink.py # pyvirtualcam bridge to OS video loops
-├── app.py              # Orchestration loop and OpenCV UI
+├── app.py              # CLI orchestration loop and OpenCV UI
 ├── requirements.txt    # core runtime (cross-platform, CPU path)
 └── requirements-gpu.txt # optional CUDA/CuPy GPU acceleration
+src/                    # desktop frontend (Vite + TypeScript): main.ts, ipc.ts
+src-tauri/              # Tauri 2.0 desktop shell (Rust): window + process mgmt
+│   ├── src/{main,lib,ipc}.rs   # entry, tauri commands, ControlState contract
+│   ├── capabilities/  # scoped permissions (sidecar spawn)
+│   └── tauri.conf.json # window + bundled faceray_backend sidecar
 scripts/
-└── capture_selfcheck.py # headless one-frame pipeline check -> montage PNG
+├── capture_selfcheck.py # headless one-frame pipeline check -> montage PNG
+└── build_sidecar.sh   # build target-triple Tauri sidecar (dev shim / PyInstaller)
 tests/                  # pytest suite for pure relighter/modifier math
 ```
 
@@ -36,6 +42,14 @@ tests/                  # pytest suite for pure relighter/modifier math
   touch camera/OS APIs.
 - `drivers/*` never imports `core/*` — it only knows about raw frame arrays.
 - `app.py` is the only place that wires `core` + `drivers` together.
+- **Desktop shell (data/control plane split):** all computer vision stays in
+  Python; all window/process orchestration stays in Rust (`src-tauri/`); the
+  TypeScript (`src/`) is presentation only. Video frames never cross the IPC
+  boundary — only the scalar `ControlState` payload does. Keep the three
+  `ControlState` mirrors in sync: `src-tauri/src/ipc.rs` ↔ `src/ipc.ts` ↔
+  `faceray/sidecar_entry.py` (Task 2). Control transport is **stdio** (Tauri
+  manages the sidecar lifecycle and kills it on exit — no orphaned webcam
+  hooks); see the desktop-app section in README.md.
 
 ## Pipeline data flow
 
@@ -95,8 +109,14 @@ changing its shape.
 3. **Phase 3** — GPU math and rendering: `core/relighter.py`,
    `core/modifier.py`.
 
-All three phases are implemented as of the current `main`. Future work should
-build on top of this, not restructure it, unless explicitly requested.
+All three CLI phases are implemented on `main`. **Desktop app (Tauri 2.0)** is
+the current workstream, built on top of the CLI core without restructuring it:
+
+- **D-Task 1** (done) — Tauri core: `src-tauri/` Rust wrapper, `ControlState`
+  IPC contract, buildable Vite/TS shell, `build_sidecar.sh`.
+- **D-Task 2** (next) — `faceray/sidecar_entry.py` (non-blocking stdin JSON
+  reads, graceful shutdown on parent death) + Rust sidecar spawn/stdin plumbing.
+- **D-Task 3** — TypeScript control panel (light-vector sliders, effect toggles).
 
 ## Testing
 
@@ -109,3 +129,17 @@ virtual-cam backend. Keep new pure-math logic covered here.
 For a real capture→process check without a live window, run
 `python -m scripts.capture_selfcheck --out selfcheck.png` (needs a webcam +
 Camera permission); it writes a labelled before/after montage.
+
+**Desktop shell checks** (run from repo root; toolchain: cargo 1.96, node 24,
+tauri-cli 2.11):
+
+```bash
+npm run build                         # tsc + vite build (frontend)
+cd src-tauri && cargo check           # Rust wrapper compiles
+cd src-tauri && cargo test --lib      # ControlState wire-format contract tests
+./scripts/build_sidecar.sh            # (re)generate the dev sidecar binary
+```
+
+`cargo check`/`generate_context!` validates that the `externalBin` sidecar
+exists at `src-tauri/binaries/faceray_backend-<triple>`, so run
+`build_sidecar.sh` before building the Rust crate on a fresh checkout.

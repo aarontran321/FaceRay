@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── Tauri desktop shell / Node frontend ──────────────────────────────
+node_modules/
+# Vite build output (also matched by dist/ above, listed for clarity)
+/dist
+# Rust build artifacts and Tauri-generated schemas
+src-tauri/target/
+src-tauri/gen/
+# Bundled sidecar executables are built locally / in CI, never committed
+src-tauri/binaries/

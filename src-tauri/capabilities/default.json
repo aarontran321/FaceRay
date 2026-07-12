@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core capability set for the FaceRay control window: base APIs plus permission to spawn the bundled Python sidecar.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/faceray_backend",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
+  ]
+}
