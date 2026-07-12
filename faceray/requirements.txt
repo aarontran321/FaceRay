@@ -1,0 +1,5 @@
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+numpy>=1.24.0
+pyvirtualcam>=0.10.0
+cupy-cuda12x>=12.0.0      # GPU array operations matching local CUDA runtime
