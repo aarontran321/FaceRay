@@ -1,6 +1,4 @@
-# FaceRay core runtime — cross-platform (Linux / macOS / Windows).
-# Everything here installs and runs with the CPU (NumPy) shading path.
-# For the optional CUDA/CuPy GPU path, see requirements-gpu.txt.
+# FaceRay core runtime — cross-platform (Linux / macOS / Windows), CPU-only.
 opencv-python>=4.8.0
 mediapipe>=0.10.0
 numpy>=1.24.0

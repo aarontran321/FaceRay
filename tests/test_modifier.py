@@ -1,13 +1,17 @@
-"""Unit tests for faceray.core.modifier (gaze warp + blur mask geometry)."""
+"""Unit tests for faceray.core.modifier (gaze warp, smoothing, blur masks)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from faceray.core.modifier import BlurMode, Modifier
+from faceray.core.modifier import Modifier
 from faceray.core.tracker import LEFT_EYE_RING, LEFT_IRIS
-from tests.conftest import make_landmarks
+from tests.conftest import make_face_landmarks, make_landmarks
+
+
+def _noisy_frame(seed: int) -> np.ndarray:
+    return np.random.default_rng(seed).integers(0, 255, size=(480, 640, 3), dtype=np.uint8)
 
 
 def test_gaze_strength_clamped() -> None:
@@ -18,44 +22,61 @@ def test_gaze_strength_clamped() -> None:
     assert m.gaze_strength == 0.0
 
 
-def test_blur_kernel_forced_odd_and_min() -> None:
+def test_smoothing_strength_clamped() -> None:
     m = Modifier()
-    m.blur_kernel = 30
-    assert m.blur_kernel == 31
-    m.blur_kernel = 1
-    assert m.blur_kernel == 3
+    m.smoothing_strength = 5.0
+    assert m.smoothing_strength == 1.0
+    m.smoothing_strength = -2.0
+    assert m.smoothing_strength == 0.0
 
 
-def test_cycle_blur_mode_order() -> None:
-    m = Modifier(blur_mode=BlurMode.OFF)
-    assert m.cycle_blur_mode() is BlurMode.FACE
-    assert m.cycle_blur_mode() is BlurMode.BACKGROUND
-    assert m.cycle_blur_mode() is BlurMode.OFF
-
-
-def test_blur_off_is_passthrough(frame: np.ndarray) -> None:
-    m = Modifier(blur_mode=BlurMode.OFF)
+def test_face_blur_off_is_passthrough(frame: np.ndarray) -> None:
+    m = Modifier(gaze_strength=0.0, face_blur_enabled=False)
     lm = make_landmarks()
-    out = m.apply_blur(frame, lm)
-    assert out is frame
+    assert m.anonymise_face(frame, lm) is frame
 
 
-def test_blur_face_changes_face_region(frame: np.ndarray) -> None:
-    # Non-uniform frame so blurring actually alters pixels.
-    f = np.random.default_rng(1).integers(0, 255, size=(480, 640, 3), dtype=np.uint8)
-    m = Modifier(blur_mode=BlurMode.FACE)
-    lm = make_landmarks()
-    out = m.apply_blur(f, lm)
+def test_face_blur_changes_face_region() -> None:
+    f = _noisy_frame(1)
+    m = Modifier(gaze_strength=0.0, face_blur_enabled=True)
+    out = m.anonymise_face(f, make_landmarks())
     assert out.shape == f.shape and out.dtype == np.uint8
     assert not np.array_equal(out, f)
 
 
-def test_blur_background_differs_from_face(frame: np.ndarray) -> None:
-    f = np.random.default_rng(2).integers(0, 255, size=(480, 640, 3), dtype=np.uint8)
+def test_background_blur_differs_from_face_blur() -> None:
+    f = _noisy_frame(2)
     lm = make_landmarks()
-    face_out = Modifier(blur_mode=BlurMode.FACE).apply_blur(f, lm)
-    bg_out = Modifier(blur_mode=BlurMode.BACKGROUND).apply_blur(f, lm)
+    face_out = Modifier(gaze_strength=0.0, face_blur_enabled=True).anonymise_face(f, lm)
+    bg_out = Modifier(gaze_strength=0.0, background_blur_enabled=True).blur_background(f, lm)
     assert not np.array_equal(face_out, bg_out)
+
+
+def test_smoothing_off_is_passthrough(frame: np.ndarray) -> None:
+    m = Modifier(gaze_strength=0.0, smoothing_enabled=False)
+    assert m.smooth_skin(frame, make_landmarks()) is frame
+
+
+def test_smoothing_changes_skin_only() -> None:
+    lm = make_face_landmarks()
+    # A flat mid-grey with fine noise: bilateral smooths the low-contrast grain
+    # over the skin region (edge-preserving; pure random noise would be a no-op).
+    rng = np.random.default_rng(3)
+    f = np.clip(128 + rng.normal(0, 12, (480, 640, 3)), 0, 255).astype(np.uint8)
+    m = Modifier(gaze_strength=0.0, smoothing_enabled=True, smoothing_strength=1.0)
+    out = m.smooth_skin(f, lm)
+    assert out.shape == f.shape and out.dtype == np.uint8
+    assert not np.array_equal(out, f)
+
+
+def test_skin_mask_keeps_eyes_and_mouth_sharp() -> None:
+    lm = make_face_landmarks()
+    mask = Modifier()._skin_mask(lm.frame_shape, lm)
+    # An interior cheek pixel (below the eye, above the mouth) is skin -> smoothed.
+    assert mask[250, 224] > 0.5
+    # The eye centre is carved out so lashes stay sharp.
+    eye = lm.centroid(LEFT_EYE_RING)
+    assert mask[int(eye[1]), int(eye[0])] < 0.2
 
 
 def test_gaze_noop_without_iris(frame: np.ndarray) -> None:
@@ -94,7 +115,12 @@ def test_eye_roi_within_bounds() -> None:
 
 def test_apply_full_pipeline_shape(frame: np.ndarray) -> None:
     lm = make_landmarks()
-    m = Modifier(gaze_strength=0.7, blur_mode=BlurMode.BACKGROUND)
+    m = Modifier(
+        gaze_strength=0.7,
+        background_blur_enabled=True,
+        smoothing_enabled=True,
+        smoothing_strength=0.6,
+    )
     out = m.apply(frame, lm)
     assert out.shape == frame.shape and out.dtype == np.uint8
 

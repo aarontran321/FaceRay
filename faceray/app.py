@@ -1,8 +1,8 @@
 """FaceRay -- main execution script, orchestration loop, and CV2 UI.
 
-Wires the four pipeline stages together::
+Wires the pipeline stages together::
 
-    [webcam] -> tracker -> relighter -> modifier -> virtual_sink
+    [webcam] -> tracker -> modifier -> virtual_sink
 
 and drives them from a single capture loop. A lightweight OpenCV preview window
 shows the processed frame with an on-screen HUD and accepts hotkeys to toggle
@@ -14,12 +14,11 @@ Run::
     python -m faceray.app                      # 1280x720 @ 30 fps, cam 0
     python -m faceray.app --width 1920 --height 1080 --fps 60 --camera 1
     python -m faceray.app --no-preview         # headless (virtual cam only)
-    python -m faceray.app --no-gpu             # force the NumPy shading path
 
 Hotkeys (preview window focused):
-    q / Esc  quit                 l  toggle relighting
-    g        toggle gaze fix      b  cycle blur (off/face/background)
-    [  / ]   orbit light left/right     -/=  dim / brighten light
+    q / Esc  quit                 g  toggle gaze correction
+    f        toggle face anonymiser blur       b  toggle background blur
+    s        toggle skin smoothing
     m        mirror preview       h  toggle HUD
 """
 
@@ -28,30 +27,32 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import cv2
 import numpy as np
 
-from faceray.core import FaceTracker, Relighter, Modifier
-from faceray.core.modifier import BlurMode
+from faceray.core import FaceTracker, Modifier
 from faceray.drivers import VirtualSink
 from faceray.drivers.virtual_sink import VirtualSinkError
 
 
 WINDOW_NAME = "FaceRay"
 
+_GAZE_ON_STRENGTH: float = 0.7
+
 
 @dataclass
 class PipelineToggles:
     """Live on/off state for each effect, driven by the UI hotkeys."""
 
-    relight: bool = True
     gaze: bool = True
+    face_blur: bool = False
+    background_blur: bool = False
+    smoothing: bool = False
     mirror: bool = True
     show_hud: bool = True
-    blur: BlurMode = field(default=BlurMode.OFF)
 
 
 class FaceRayApp:
@@ -64,7 +65,6 @@ class FaceRayApp:
         self._capture: Optional[cv2.VideoCapture] = None
         self._tracker: Optional[FaceTracker] = None
         self._sink: Optional[VirtualSink] = None
-        self._relighter = Relighter(use_gpu=not args.no_gpu)
         self._modifier = Modifier()
 
         self._fps_ema: float = 0.0
@@ -107,9 +107,6 @@ class FaceRayApp:
             print("[FaceRay] Continuing in preview-only mode.")
             self._sink = None
 
-        mode = "GPU (CuPy)" if self._relighter.gpu_active else "CPU (NumPy)"
-        print(f"[FaceRay] Relighting backend: {mode}")
-
     def _teardown(self) -> None:
         if self._sink is not None:
             self._sink.close()
@@ -126,14 +123,11 @@ class FaceRayApp:
         if landmarks is None:
             return frame_bgr  # no face -> clean passthrough
 
-        out = frame_bgr
-        if self._toggles.relight:
-            out = self._relighter.apply(out, landmarks)
-
-        self._modifier.gaze_strength = 0.7 if self._toggles.gaze else 0.0
-        self._modifier.blur_mode = self._toggles.blur
-        out = self._modifier.apply(out, landmarks)
-        return out
+        self._modifier.gaze_strength = _GAZE_ON_STRENGTH if self._toggles.gaze else 0.0
+        self._modifier.face_blur_enabled = self._toggles.face_blur
+        self._modifier.background_blur_enabled = self._toggles.background_blur
+        self._modifier.smoothing_enabled = self._toggles.smoothing
+        return self._modifier.apply(frame_bgr, landmarks)
 
     # -- Main loop ----------------------------------------------------------
     def run(self) -> int:
@@ -205,24 +199,18 @@ class FaceRayApp:
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):  # q or Esc
             return False
-        if key == ord("l"):
-            self._toggles.relight = not self._toggles.relight
-        elif key == ord("g"):
+        if key == ord("g"):
             self._toggles.gaze = not self._toggles.gaze
+        elif key == ord("f"):
+            self._toggles.face_blur = not self._toggles.face_blur
         elif key == ord("b"):
-            self._toggles.blur = self._modifier.cycle_blur_mode()
+            self._toggles.background_blur = not self._toggles.background_blur
+        elif key == ord("s"):
+            self._toggles.smoothing = not self._toggles.smoothing
         elif key == ord("m"):
             self._toggles.mirror = not self._toggles.mirror
         elif key == ord("h"):
             self._toggles.show_hud = not self._toggles.show_hud
-        elif key == ord("["):
-            self._relighter.orbit_light(-0.20)
-        elif key == ord("]"):
-            self._relighter.orbit_light(0.20)
-        elif key in (ord("-"), ord("_")):
-            self._relighter.intensity = self._relighter.intensity - 0.1
-        elif key in (ord("="), ord("+")):
-            self._relighter.intensity = self._relighter.intensity + 0.1
 
         # Window closed via the title-bar button.
         if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
@@ -230,16 +218,15 @@ class FaceRayApp:
         return True
 
     def _draw_hud(self, view: np.ndarray) -> None:
-        backend = "GPU" if self._relighter.gpu_active else "CPU"
         sink = self._sink.device_name if self._sink is not None else "preview-only"
         lines = [
-            f"FaceRay  {self._fps_ema:5.1f} FPS  [{backend}]",
-            f"relight:{_on(self._toggles.relight)} "
+            f"FaceRay  {self._fps_ema:5.1f} FPS",
             f"gaze:{_on(self._toggles.gaze)} "
-            f"blur:{self._toggles.blur.value} "
-            f"light:{self._relighter.intensity:.1f}",
+            f"face-blur:{_on(self._toggles.face_blur)} "
+            f"bg-blur:{_on(self._toggles.background_blur)} "
+            f"smooth:{_on(self._toggles.smoothing)}",
             f"out: {sink}",
-            "q quit  l light  g gaze  b blur  [ ] orbit  -/= dim/bright",
+            "q quit  g gaze  f face-blur  b bg-blur  s smooth  m mirror  h hud",
         ]
         y = 24
         for text in lines:
@@ -257,7 +244,7 @@ def _on(flag: bool) -> str:
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="faceray",
-        description="Real-time AI virtual camera: relighting, gaze fix, smart blur.",
+        description="Real-time AI virtual camera: gaze correction, smoothing, blur.",
     )
     parser.add_argument("--camera", type=int, default=0, help="Webcam device index.")
     parser.add_argument("--width", type=int, default=1280, help="Capture width.")
@@ -265,8 +252,6 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--fps", type=float, default=30.0, help="Target frame rate.")
     parser.add_argument("--no-preview", action="store_true",
                         help="Run headless; push to the virtual camera only.")
-    parser.add_argument("--no-gpu", action="store_true",
-                        help="Force the CPU (NumPy) shading path even if CuPy is present.")
     return parser.parse_args(argv)
 
 

@@ -1,63 +1,42 @@
 //! Control-plane data types shared across the IPC boundary.
 //!
 //! [`ControlState`] is the *entire* contract that crosses UI -> Rust -> Python.
-//! It carries only lightweight scalar control state (light vector, toggles),
-//! never pixel data — the video frame loop stays isolated in the Python
-//! sidecar's data plane. It mirrors the `ControlState` interface in
-//! `src/ipc.ts`; keep the two in sync.
+//! It carries only lightweight scalar control state (four independent
+//! face-interaction features), never pixel data — the video frame loop stays
+//! isolated in the Python sidecar's data plane. It mirrors the `ControlState`
+//! interface in `src/ipc.ts` and `SidecarControl` in `faceray/sidecar_entry.py`;
+//! keep the three in sync.
 
 use serde::{Deserialize, Serialize};
 
-/// Which region the Gaussian blur is applied to. Serializes to the same
-/// lowercase strings the Python `BlurMode` enum uses (`off` / `face` /
-/// `background`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum BlurMode {
-    #[default]
-    Off,
-    Face,
-    Background,
-}
-
 /// Control-plane payload sent from the UI toward the Python sidecar.
 ///
-/// Serialized to a single line of JSON and (from Task 2) written to the
-/// sidecar's stdin.
+/// Serialized to a single line of JSON and written to the sidecar's stdin.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ControlState {
-    /// Virtual light direction in MediaPipe landmark space: `+x` right,
-    /// `+y` down, `+z` away from the camera. Normalized by the Python
-    /// relighter on receipt, so magnitude here is irrelevant.
-    pub light_x: f32,
-    pub light_y: f32,
-    pub light_z: f32,
-    /// Relight blend weight in `[0, 2]`.
-    pub intensity: f32,
-    /// Ambient floor in `[0, 1]`.
-    pub ambient: f32,
-    /// Eye-contact / gaze correction toggle and its temporal smoothing
-    /// (`[0, 0.98]`; higher = steadier, lower = snappier).
+    /// Eye-contact / gaze correction: on/off and its tracking sensitivity
+    /// (`[0, 1]`).
     pub gaze_enabled: bool,
-    pub gaze_smoothing: f32,
-    /// Other effect toggles.
-    pub relight_enabled: bool,
-    pub blur_mode: BlurMode,
+    pub gaze_sensitivity: f32,
+    /// Face anonymiser — heavy opaque blur over the face hull only.
+    pub face_blur_enabled: bool,
+    /// Depth-of-field background blur; the face stays crisp.
+    pub background_blur_enabled: bool,
+    /// Skin smoothing (beauty filter): on/off and its intensity (`[0, 1]`).
+    pub smoothing_enabled: bool,
+    pub smoothing_strength: f32,
 }
 
 impl Default for ControlState {
     fn default() -> Self {
-        // Matches faceray.core defaults (Relighter / Modifier constructors).
+        // Matches faceray.core.Modifier defaults.
         Self {
-            light_x: 0.4,
-            light_y: -0.3,
-            light_z: -1.0,
-            intensity: 0.6,
-            ambient: 0.55,
             gaze_enabled: true,
-            gaze_smoothing: 0.6,
-            relight_enabled: true,
-            blur_mode: BlurMode::Off,
+            gaze_sensitivity: 0.7,
+            face_blur_enabled: false,
+            background_blur_enabled: false,
+            smoothing_enabled: false,
+            smoothing_strength: 0.5,
         }
     }
 }
@@ -84,10 +63,11 @@ mod tests {
     }
 
     #[test]
-    fn blur_mode_serializes_lowercase() {
-        assert_eq!(
-            serde_json::to_string(&BlurMode::Background).unwrap(),
-            "\"background\""
-        );
+    fn defaults_enable_gaze_only() {
+        let state = ControlState::default();
+        assert!(state.gaze_enabled);
+        assert!(!state.face_blur_enabled);
+        assert!(!state.background_blur_enabled);
+        assert!(!state.smoothing_enabled);
     }
 }

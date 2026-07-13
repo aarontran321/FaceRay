@@ -1,26 +1,26 @@
-"""Gaze correction algorithms & Gaussian blurring masks.
+"""Face-interaction filters: gaze correction, skin smoothing, and blur masks.
 
-Stage 3 of the FaceRay pipeline (Features B and C).
+Stage 3 of the FaceRay pipeline. Every effect operates purely on the 3D face
+landmarks plus the BGR frame — there is no lighting math in the pipeline.
 
-Feature B -- Eye-Contact / Gaze Correction
-    Uses the refined iris landmarks (left 468-472, right 473-477) and the eye
-    aperture ring landmarks to measure the pupil-to-socket displacement. When
-    the user looks away from the lens, each eye region is warped by a bounded
-    affine translation that nudges the iris texture back toward the geometric
-    centre of the aperture, simulating direct eye contact.
+Features (each independently toggleable, each a safe no-op when disabled or when
+its inputs are degenerate):
 
-Feature C -- Face Blur / Identity Privacy
-    Builds a dynamic binary mask from the face convex hull and applies a
-    Gaussian blur to either the face (identity protection) or its inverse
-    (background privacy) depending on :attr:`blur_mode`.
-
-Both features are optional and independently toggleable; every method is a
-safe no-op when its inputs are missing or degenerate.
+* **Eye-contact / gaze correction** — remap the iris (landmarks 468-472 /
+  473-477) toward the eye-aperture centre with a temporally smoothed affine
+  warp, so glancing down at the monitor still reads as looking at the lens.
+  The per-eye shift is EMA-smoothed to eradicate micro-jitter.
+* **Face smoothing (beauty filter)** — an edge-preserving bilateral filter
+  confined to the skin region, with the eyes and mouth carved out so lashes and
+  lips stay sharp.
+* **Face anonymiser** — a heavy, opaque Gaussian restricted to the face hull;
+  the background stays sharp.
+* **Background blur** — a depth-of-field Gaussian outside the face hull; the
+  face stays crisp.
 """
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import Optional, Tuple
 
 import cv2
@@ -30,31 +30,26 @@ from faceray.core.tracker import (
     FaceLandmarks,
     LEFT_EYE_RING,
     LEFT_IRIS,
+    MOUTH,
     RIGHT_EYE_RING,
     RIGHT_IRIS,
 )
 
 
-class BlurMode(Enum):
-    """Which region the Gaussian blur is applied to."""
-
-    OFF = "off"
-    FACE = "face"          # blur the face -> identity privacy
-    BACKGROUND = "background"  # blur everything but the face
-
-
 class Modifier:
-    """Gaze correction and Gaussian identity/background blur.
+    """Gaze correction, skin smoothing, and identity/background blur.
 
     Args:
         gaze_strength: Fraction of the measured pupil displacement corrected,
-            in ``[0, 1]``. ``0`` disables correction.
+            in ``[0, 1]`` (the UI "sensitivity"). ``0`` disables correction.
         gaze_max_shift: Hard cap (in pixels) on per-eye translation to keep the
             warp stable when tracking is noisy.
         gaze_smoothing: Temporal EMA inertia in ``[0, 0.98]`` applied to the
-            per-eye shift; higher is smoother/steadier, lower is snappier.
-        blur_mode: Initial :class:`BlurMode`.
-        blur_kernel: Odd Gaussian kernel size for the blur pass.
+            per-eye shift; higher is steadier, lower is snappier.
+        face_blur_enabled: Apply the heavy face-anonymiser blur.
+        background_blur_enabled: Apply the background depth-of-field blur.
+        smoothing_enabled: Apply the skin-smoothing beauty filter.
+        smoothing_strength: Smoothing intensity in ``[0, 1]``.
     """
 
     def __init__(
@@ -63,18 +58,20 @@ class Modifier:
         gaze_strength: float = 0.7,
         gaze_max_shift: float = 12.0,
         gaze_smoothing: float = 0.6,
-        blur_mode: BlurMode = BlurMode.OFF,
-        blur_kernel: int = 31,
+        face_blur_enabled: bool = False,
+        background_blur_enabled: bool = False,
+        smoothing_enabled: bool = False,
+        smoothing_strength: float = 0.5,
     ) -> None:
         self.gaze_strength = gaze_strength
         self.gaze_max_shift = float(max(0.0, gaze_max_shift))
         self.gaze_smoothing = gaze_smoothing
-        self.blur_mode = blur_mode
-        self.blur_kernel = blur_kernel
+        self.face_blur_enabled = bool(face_blur_enabled)
+        self.background_blur_enabled = bool(background_blur_enabled)
+        self.smoothing_enabled = bool(smoothing_enabled)
+        self.smoothing_strength = smoothing_strength
 
-        # Per-eye exponential moving average of the recentre shift vector,
-        # keyed by iris landmark set. Smooths out per-frame landmark jitter so
-        # the warp glides instead of twitching. See :meth:`_recentre_eye`.
+        # Per-eye EMA of the recentre shift vector, keyed by iris landmark set.
         self._shift_ema: dict[Tuple[int, ...], np.ndarray] = {}
 
     # -- Configuration ------------------------------------------------------
@@ -88,12 +85,7 @@ class Modifier:
 
     @property
     def gaze_smoothing(self) -> float:
-        """Temporal inertia of the gaze warp in ``[0, 0.98]``.
-
-        ``0`` applies the raw per-frame correction (most responsive, most
-        jittery); higher values blend more of the previous shift for fluid,
-        stable eye contact. Capped below 1 so the warp can never freeze.
-        """
+        """Temporal inertia of the gaze warp in ``[0, 0.98]`` (capped below 1)."""
         return self._gaze_smoothing
 
     @gaze_smoothing.setter
@@ -101,34 +93,25 @@ class Modifier:
         self._gaze_smoothing = float(np.clip(value, 0.0, 0.98))
 
     @property
-    def blur_kernel(self) -> int:
-        return self._blur_kernel
+    def smoothing_strength(self) -> float:
+        return self._smoothing_strength
 
-    @blur_kernel.setter
-    def blur_kernel(self, value: int) -> None:
-        k = int(value)
-        if k < 3:
-            k = 3
-        if k % 2 == 0:  # Gaussian kernels must be odd
-            k += 1
-        self._blur_kernel = k
-
-    def cycle_blur_mode(self) -> BlurMode:
-        """Advance the blur mode OFF -> FACE -> BACKGROUND -> OFF and return it."""
-        order = (BlurMode.OFF, BlurMode.FACE, BlurMode.BACKGROUND)
-        self.blur_mode = order[(order.index(self.blur_mode) + 1) % len(order)]
-        return self.blur_mode
+    @smoothing_strength.setter
+    def smoothing_strength(self, value: float) -> None:
+        self._smoothing_strength = float(np.clip(value, 0.0, 1.0))
 
     # -- Public pipeline ----------------------------------------------------
     def apply(self, frame_bgr: np.ndarray, landmarks: FaceLandmarks) -> np.ndarray:
-        """Run gaze correction then blur, honouring the current toggles."""
+        """Run gaze correction, skin smoothing, then blurs, honouring toggles."""
         if frame_bgr is None or frame_bgr.size == 0:
             return frame_bgr
         out = self.correct_gaze(frame_bgr, landmarks)
-        out = self.apply_blur(out, landmarks)
+        out = self.smooth_skin(out, landmarks)
+        out = self.anonymise_face(out, landmarks)
+        out = self.blur_background(out, landmarks)
         return out
 
-    # -- Feature B: gaze correction -----------------------------------------
+    # -- Gaze correction ----------------------------------------------------
     def correct_gaze(self, frame_bgr: np.ndarray, landmarks: FaceLandmarks) -> np.ndarray:
         """Warp each eye region so the iris re-centres in its aperture."""
         if self._gaze_strength <= 0.0 or not landmarks.has_iris:
@@ -237,23 +220,119 @@ class Modifier:
         mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=max(1.5, min(ax, ay) * 0.25))
         return mask[:, :, None]
 
-    # -- Feature C: Gaussian blur -------------------------------------------
-    def apply_blur(self, frame_bgr: np.ndarray, landmarks: FaceLandmarks) -> np.ndarray:
-        """Blur the face or background per :attr:`blur_mode`."""
-        if self.blur_mode is BlurMode.OFF:
+    # -- Skin smoothing (beauty filter) -------------------------------------
+    def smooth_skin(self, frame_bgr: np.ndarray, landmarks: FaceLandmarks) -> np.ndarray:
+        """Edge-preserving bilateral smoothing confined to the skin region."""
+        if not self.smoothing_enabled or self._smoothing_strength <= 0.0:
             return frame_bgr
 
+        bbox = self._face_bbox(frame_bgr.shape[:2], landmarks)
+        if bbox is None:
+            return frame_bgr
+        x0, y0, x1, y1 = bbox
+        roi = frame_bgr[y0:y1, x0:x1]
+        if roi.size == 0:
+            return frame_bgr
+
+        s = self._smoothing_strength
+        # Bilateral filter smooths flat skin while preserving structural edges.
+        # Scale the diameter/sigmas with the requested intensity.
+        diameter = int(round(5 + 8 * s))
+        sigma = 30.0 + 90.0 * s
+        filtered = cv2.bilateralFilter(roi, diameter, sigma, sigma)
+
+        skin = self._skin_mask(frame_bgr.shape[:2], landmarks)[y0:y1, x0:x1]
+        alpha = (skin * s)[:, :, None]
+        blended = roi * (1.0 - alpha) + filtered * alpha
+
+        out = frame_bgr.copy()
+        out[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
+        return out
+
+    def _skin_mask(
+        self, shape: Tuple[int, int], landmarks: FaceLandmarks
+    ) -> np.ndarray:
+        """Face hull with the eyes and mouth carved out, feathered."""
+        h, w = shape
+        mask = np.zeros((h, w), dtype=np.float32)
+        cv2.fillConvexPoly(mask, landmarks.hull(), 1.0, lineType=cv2.LINE_AA)
+        self._carve(mask, landmarks, LEFT_EYE_RING, 0.9)
+        self._carve(mask, landmarks, RIGHT_EYE_RING, 0.9)
+        self._carve(mask, landmarks, MOUTH, 0.7)
+        return cv2.GaussianBlur(mask, (0, 0), sigmaX=max(2.0, min(h, w) * 0.006))
+
+    @staticmethod
+    def _carve(
+        mask: np.ndarray,
+        landmarks: FaceLandmarks,
+        idx: Tuple[int, ...],
+        scale: float,
+    ) -> None:
+        pts = landmarks.pixels[list(idx)]
+        cx, cy = pts.mean(axis=0)
+        ax = max(3.0, float(np.ptp(pts[:, 0])) * scale + 3.0)
+        ay = max(3.0, float(np.ptp(pts[:, 1])) * scale + 3.0)
+        cv2.ellipse(
+            mask, (int(cx), int(cy)), (int(ax), int(ay)),
+            0, 0, 360, color=0.0, thickness=-1,
+        )
+
+    # -- Blur effects -------------------------------------------------------
+    def anonymise_face(self, frame_bgr: np.ndarray, landmarks: FaceLandmarks) -> np.ndarray:
+        """Heavy, opaque Gaussian over the face hull; background left sharp."""
+        if not self.face_blur_enabled:
+            return frame_bgr
         h, w = frame_bgr.shape[:2]
-        hull = landmarks.hull()
-        face_mask = np.zeros((h, w), dtype=np.float32)
-        cv2.fillConvexPoly(face_mask, hull, 1.0, lineType=cv2.LINE_AA)
-        # Soften the hull edge so the composite has no hard seam.
-        face_mask = cv2.GaussianBlur(face_mask, (0, 0), sigmaX=max(4.0, min(h, w) * 0.01))
-
-        k = self._blur_kernel
+        bbox = self._face_bbox((h, w), landmarks)
+        face_w = (bbox[2] - bbox[0]) if bbox is not None else w
+        # Kernel scales with face size so anonymisation stays opaque at any zoom.
+        k = self._odd(max(31, int(face_w * 0.35)))
         blurred = cv2.GaussianBlur(frame_bgr, (k, k), 0)
-
-        select = face_mask if self.blur_mode is BlurMode.FACE else (1.0 - face_mask)
-        select = select[:, :, None]
+        mask = self._hull_mask((h, w), landmarks, feather=max(4.0, min(h, w) * 0.01))
+        select = mask[:, :, None]
         out = frame_bgr * (1.0 - select) + blurred * select
         return np.clip(out, 0, 255).astype(np.uint8)
+
+    def blur_background(self, frame_bgr: np.ndarray, landmarks: FaceLandmarks) -> np.ndarray:
+        """Depth-of-field Gaussian outside the face hull; face left crisp."""
+        if not self.background_blur_enabled:
+            return frame_bgr
+        h, w = frame_bgr.shape[:2]
+        k = self._odd(max(21, int(min(h, w) * 0.04)))
+        blurred = cv2.GaussianBlur(frame_bgr, (k, k), 0)
+        mask = self._hull_mask((h, w), landmarks, feather=max(4.0, min(h, w) * 0.01))
+        select = (1.0 - mask)[:, :, None]
+        out = frame_bgr * (1.0 - select) + blurred * select
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    # -- Shared mask helpers ------------------------------------------------
+    @staticmethod
+    def _hull_mask(
+        shape: Tuple[int, int], landmarks: FaceLandmarks, feather: float
+    ) -> np.ndarray:
+        h, w = shape
+        mask = np.zeros((h, w), dtype=np.float32)
+        cv2.fillConvexPoly(mask, landmarks.hull(), 1.0, lineType=cv2.LINE_AA)
+        if feather > 0:
+            mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=feather)
+        return mask
+
+    @staticmethod
+    def _face_bbox(
+        shape: Tuple[int, int], landmarks: FaceLandmarks
+    ) -> Optional[Tuple[int, int, int, int]]:
+        h, w = shape
+        hull = landmarks.hull().reshape(-1, 2)
+        x0 = int(np.clip(hull[:, 0].min(), 0, w - 1))
+        y0 = int(np.clip(hull[:, 1].min(), 0, h - 1))
+        x1 = int(np.clip(hull[:, 0].max() + 1, 0, w))
+        y1 = int(np.clip(hull[:, 1].max() + 1, 0, h))
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            return None
+        return x0, y0, x1, y1
+
+    @staticmethod
+    def _odd(value: int) -> int:
+        """Nearest odd integer >= 3 (Gaussian kernels must be odd)."""
+        v = max(3, int(value))
+        return v if v % 2 == 1 else v + 1

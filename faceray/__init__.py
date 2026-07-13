@@ -1,9 +1,9 @@
 """FaceRay -- real-time, AI-powered virtual camera.
 
 Captures a raw webcam feed, extracts a dense 3D face mesh, applies real-time
-geometry-based pixel manipulations (virtual relighting, eye-contact correction,
-smart blur), and pipes the modified frame into a native system virtual camera
-so external apps recognise it as a normal webcam.
+face-interaction filters (eye-contact/gaze correction, face smoothing, face
+anonymizer blur, background blur), and pipes the modified frame into a native
+system virtual camera so external apps recognise it as a normal webcam.
 
 The package is split into strictly-decoupled layers:
     faceray.core     -- frame processing & mathematical engines.

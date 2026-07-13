@@ -120,6 +120,12 @@ RIGHT_IRIS: Final[tuple[int, ...]] = (473, 474, 475, 476, 477)
 LEFT_EYE_RING: Final[tuple[int, ...]] = (33, 133, 159, 145, 158, 153, 160, 144)
 RIGHT_EYE_RING: Final[tuple[int, ...]] = (362, 263, 386, 374, 385, 380, 387, 373)
 
+# Outer lip loop, used to exclude the mouth from skin smoothing so lips stay
+# crisp. A representative subset is enough to bound the mouth region.
+MOUTH: Final[tuple[int, ...]] = (
+    61, 291, 0, 17, 13, 14, 39, 269, 91, 321, 78, 308,
+)
+
 # Approximate outer silhouette (jaw + forehead) used to build the face hull.
 FACE_OVAL: Final[tuple[int, ...]] = (
     10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379,

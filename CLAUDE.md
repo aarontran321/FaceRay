@@ -5,10 +5,10 @@ Guidance for Claude Code (or any agent) working in this repository.
 ## What this project is
 
 FaceRay is a real-time, AI-powered virtual camera. It captures a webcam feed,
-extracts a dense 3D face mesh, applies geometry-based pixel manipulations
-(virtual relighting, eye-contact/gaze correction, smart blur), and pipes the
-result into a native OS virtual camera device so apps like Discord, Zoom, and
-Meet see it as an ordinary webcam.
+extracts a dense 3D face mesh, applies high-fidelity face-interaction filters
+(eye-contact/gaze correction, face smoothing, face anonymizer blur, background
+blur — no lighting), and pipes the result into a native OS virtual camera device
+so apps like Discord, Zoom, and Meet see it as an ordinary webcam.
 
 Full pipeline and feature details live in [README.md](README.md) — read that
 first for the architecture diagram and algorithm descriptions.
@@ -19,14 +19,14 @@ first for the architecture diagram and algorithm descriptions.
 faceray/                # Python CV core (data plane) + CLI
 ├── core/
 │   ├── tracker.py     # MediaPipe Face Landmarker (Tasks) & 3D landmark extraction
-│   ├── relighter.py   # CUDA/CuPy Lambertian shading & surface normals
-│   └── modifier.py    # Gaze correction & Gaussian blur masks
+│   └── modifier.py    # Gaze correction, skin smoothing, face/background blur
 ├── drivers/
-│   └── virtual_sink.py # pyvirtualcam bridge to OS video loops
+│   ├── virtual_sink.py # pyvirtualcam bridge to OS video loops
+│   └── preview_server.py # loopback MJPEG preview of processed frames
 ├── app.py              # CLI orchestration loop and OpenCV UI
-├── requirements.txt    # core runtime (cross-platform, CPU path)
-└── requirements-gpu.txt # optional CUDA/CuPy GPU acceleration
-src/                    # desktop frontend (Vite + TypeScript): main.ts, ipc.ts
+├── sidecar_entry.py    # Tauri sidecar: stdio-controlled headless pipeline
+└── requirements.txt    # core runtime (cross-platform)
+src/                    # desktop frontend (Vite + TypeScript): main.ts, ui.ts, ipc.ts
 src-tauri/              # Tauri 2.0 desktop shell (Rust): window + process mgmt
 │   ├── src/{main,lib,ipc}.rs   # entry, tauri commands, ControlState contract
 │   ├── capabilities/  # scoped permissions (sidecar spawn)
@@ -34,7 +34,7 @@ src-tauri/              # Tauri 2.0 desktop shell (Rust): window + process mgmt
 scripts/
 ├── capture_selfcheck.py # headless one-frame pipeline check -> montage PNG
 └── build_sidecar.sh   # build target-triple Tauri sidecar (dev shim / PyInstaller)
-tests/                  # pytest suite for pure relighter/modifier math
+tests/                  # pytest suite for pure modifier math + sidecar stdio
 ```
 
 **Strict module boundaries — do not violate these:**
@@ -54,14 +54,13 @@ tests/                  # pytest suite for pure relighter/modifier math
 ## Pipeline data flow
 
 ```
-[Raw Webcam Frame] → tracker.py → relighter.py → modifier.py → virtual_sink.py
+[Raw Webcam Frame] → tracker.py → modifier.py → virtual_sink.py
 ```
 
 `tracker.py` produces a `FaceLandmarks` object (468 dense + 10 iris 3D
-landmarks) that flows through `relighter.py` and `modifier.py` unchanged;
-each stage returns a new BGR frame. `FaceLandmarks` is the shared contract
-between all three `core` modules — see its docstring in `tracker.py` before
-changing its shape.
+landmarks) that flows through `modifier.py` unchanged; each stage returns a new
+BGR frame. `FaceLandmarks` is the shared contract between the `core` modules —
+see its docstring in `tracker.py` before changing its shape.
 
 ## Coding standards (established, keep following)
 
@@ -69,12 +68,12 @@ changing its shape.
 - No placeholders, `TODO`s, or truncated snippets — every change must be a
   complete, working implementation.
 - Guard clauses for hardware/runtime failure modes: missing camera, dropped
-  frames, absent CUDA context, missing virtual-cam backend. Fail loud with a
-  clear message, but never crash the capture loop on a single bad frame.
-- GPU context integrity: `relighter.py` keeps array math in the active `xp`
-  namespace (CuPy when available, NumPy fallback otherwise) and minimizes
-  host↔device copies — only bring small per-triangle results back to host for
-  `cv2` rasterization.
+  frames, missing virtual-cam backend. Fail loud with a clear message, but never
+  crash the capture loop on a single bad frame.
+- Effect masks are confined to face geometry: gaze/smoothing/anonymiser work off
+  the iris, eye-ring, mouth, and face-hull landmarks; feather mask edges so
+  composites have no hard seam, and keep per-frame work bounded to the face
+  bounding box where possible for real-time throughput.
 - No comments explaining *what* code does (names should do that); only
   comments capturing non-obvious *why* (a subtle invariant, a workaround).
 
@@ -82,75 +81,65 @@ changing its shape.
 
 - The core pipeline **has been executed and verified** on macOS / Python 3.13
   with a `.venv` (`python -m venv .venv`): imports, unit tests, and a full
-  tracker→relighter→modifier run against a real face image all pass. The live
-  webcam + virtual-cam legs still depend on host hardware/permissions (see
-  below).
+  tracker→modifier run against a real face image all pass. The live webcam +
+  virtual-cam legs still depend on host hardware/permissions (see below).
 - **MediaPipe Tasks migration:** the wheels that ship Python 3.13 support
   (mediapipe ≥ 0.10.30) dropped the legacy `mediapipe.solutions` API, so
   `tracker.py` targets the Tasks `FaceLandmarker`. It needs the
   `face_landmarker.task` model bundle, which `ensure_model()` downloads once to
   `~/.cache/faceray/` (override via `FACERAY_MODEL_PATH` / `FACERAY_CACHE_DIR`).
-  The `FaceLandmarks` contract is unchanged, so `relighter`/`modifier`/`app`
-  were untouched.
 - On macOS, `cv2.VideoCapture` needs the host terminal to hold Camera
   permission (System Settings → Privacy & Security → Camera); non-GUI processes
   are denied silently rather than prompted.
 - A virtual-camera backend is required to actually output to Discord/Zoom/Meet:
   OBS Virtual Camera (Windows/macOS) or `v4l2loopback` (Linux).
-- GPU deps live in `requirements-gpu.txt` (`cupy-cuda12x`), separate from the
-  core `requirements.txt` because they can't install without a CUDA runtime
-  (e.g. on macOS). Everything degrades gracefully to NumPy without them.
+- The pipeline is CPU-only (OpenCV) — there is no GPU/CUDA dependency. Lighting
+  and its CuPy path were removed in the utility-first redesign.
 
-## Milestone plan (for context on ordering)
+## Current architecture (utility-first redesign)
 
-1. **Phase 1** — core pipeline verification: `app.py` running a clean webcam
-   loop through `drivers/virtual_sink.py`.
-2. **Phase 2** — tracking: `core/tracker.py`.
-3. **Phase 3** — GPU math and rendering: `core/relighter.py`,
-   `core/modifier.py`.
+The desktop app is a **Tauri 2.0** shell (Rust `src-tauri/`, TS `src/`) driving
+the Python CV core as a **sidecar** over stdio. Lighting/relighting was removed
+entirely; the product is four independent face-interaction features, all in
+`core/modifier.py`:
 
-All three CLI phases are implemented on `main`. **Desktop app (Tauri 2.0)** is
-the current workstream, built on top of the CLI core without restructuring it:
+1. **Gaze correction** (primary) — iris-recentre affine warp with a per-eye
+   temporal EMA (sensitivity-controlled) for jitter-free eye contact.
+2. **Face anonymizer** — heavy opaque Gaussian over the face hull only.
+3. **Background blur** — depth-of-field Gaussian outside the hull; face crisp.
+4. **Face smoothing** — bilateral filter over the skin mask (eyes/mouth carved
+   out to keep lashes/lips sharp).
 
-- **D-Task 1** (done) — Tauri core: `src-tauri/` Rust wrapper, `ControlState`
-  IPC contract, buildable Vite/TS shell, `build_sidecar.sh`.
-- **D-Task 2** (done) — `faceray/sidecar_entry.py` (`SidecarControl`,
-  non-blocking stdin JSON reads via a daemon thread, graceful shutdown on stdin
-  EOF / SIGTERM) + Rust `sidecar.rs` (spawn on setup, forward `send_control` to
-  stdin, relay stdout as `sidecar://status` events, kill on exit). Sidecar has
-  `--synthetic` / `--image` sources for camera-free testing.
-- **D-Task 3** (done) — TypeScript control panel: `src/ui.ts` builds the widgets
-  (light-vector + intensity/ambient sliders, relight/gaze switches, blur
-  segmented control); `src/main.ts` mounts it, dispatches debounced
-  `ControlState` via the typed IPC client, and shows live sidecar status from
-  `sidecar://status` events. Framework-free DOM, macOS-styled.
+`ControlState` is the single control-plane contract. Keep the three mirrors in
+lockstep: `src-tauri/src/ipc.rs` ↔ `src/ipc.ts` ↔ `faceray/sidecar_entry.py`
+(`SidecarControl`). Fields: `gaze_enabled`, `gaze_sensitivity`,
+`face_blur_enabled`, `background_blur_enabled`, `smoothing_enabled`,
+`smoothing_strength`.
 
-Phase 1 of the desktop migration (D-Tasks 1–3) is complete, plus a live preview:
-the sidecar serves processed frames as a **loopback MJPEG stream**
-(`drivers/preview_server.py`, enabled via `--preview`; URL announced in the
-`ready` event) that the webview's `<img>` pulls directly — frame data never
-crosses the Rust/TS IPC. The feed is mirrored at ingestion (`--no-mirror` to
-disable) and streamed near-losslessly (JPEG q95) for crisp texture; the preview
-lives in a fixed 16:9 aspect-ratio container so window resizing can't distort it.
-macOS camera access requires `NSCameraUsageDescription` (in `src-tauri/Info.plist`)
-for the packaged app, or Camera permission on the launching terminal for
-`tauri dev`; the sidecar shows an in-frame placeholder if the camera is
-unavailable.
+- **Sidecar** (`faceray/sidecar_entry.py`): non-blocking stdin JSON reads via a
+  daemon thread; graceful shutdown on stdin EOF / SIGTERM; native hi-res mirrored
+  capture; `--synthetic` / `--image` sources for camera-free testing.
+- **Preview**: the sidecar serves processed frames as a **loopback MJPEG stream**
+  (`drivers/preview_server.py`, `--preview`; URL announced in the `ready` event)
+  that the webview's `<img>` pulls directly — no frame data crosses the Rust/TS
+  IPC. Near-lossless (JPEG q95); the UI preview is a fixed 16:9 container.
+- **Frontend** (`src/ui.ts`): a preview pane plus a grid of four feature cards
+  (switch + optional slider each), dispatching debounced `ControlState` via the
+  typed client. Framework-free DOM, macOS-styled.
+- macOS camera access needs `NSCameraUsageDescription` (`src-tauri/Info.plist`)
+  for the packaged app, or terminal Camera permission for `tauri dev`.
 
-The product's **primary feature is eye-contact/gaze correction**
-(`core/modifier.py`): the iris-recentre warp uses a per-eye temporal EMA
-(`gaze_smoothing`, exposed as a live control) to glide without jitter. Lighting
-is secondary. `ControlState` now carries `gaze_smoothing` — keep it in all three
-mirrors (`ipc.rs` / `ipc.ts` / `SidecarControl`). Next up: packaging a signed
-`.app` (PyInstaller sidecar via `build_sidecar.sh --release`).
+Next up: packaging a signed `.app` (PyInstaller sidecar via
+`build_sidecar.sh --release`).
 
 ## Testing
 
 A `pytest` suite lives in `tests/` (`python -m pytest tests/ -q`). It exercises
-the pure math in `core/relighter.py` (normal/shading computation) and
-`core/modifier.py` (blur mask geometry, gaze bounds) with synthetic landmark
-arrays from `tests/conftest.py::make_landmarks`, so it needs no real camera or
-virtual-cam backend. Keep new pure-math logic covered here.
+the pure math in `core/modifier.py` (gaze warp + EMA, skin-mask geometry, blur
+masks) and the sidecar stdio round-trip, with synthetic landmark arrays from
+`tests/conftest.py` (`make_landmarks` for noise, `make_face_landmarks` for a
+realistic clustered layout). It needs no real camera or virtual-cam backend;
+keep new pure-math logic covered here.
 
 For a real capture→process check without a live window, run
 `python -m scripts.capture_selfcheck --out selfcheck.png` (needs a webcam +

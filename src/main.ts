@@ -19,15 +19,12 @@ import { listen } from "@tauri-apps/api/event";
 
 // Used only when previewing the UI in a plain browser (no Rust backend).
 const FALLBACK: ControlState = {
-  light_x: 0.4,
-  light_y: -0.3,
-  light_z: -1.0,
-  intensity: 0.6,
-  ambient: 0.55,
   gaze_enabled: true,
-  gaze_smoothing: 0.6,
-  relight_enabled: true,
-  blur_mode: "off",
+  gaze_sensitivity: 0.7,
+  face_blur_enabled: false,
+  background_blur_enabled: false,
+  smoothing_enabled: false,
+  smoothing_strength: 0.5,
 };
 
 interface StatusEvent {

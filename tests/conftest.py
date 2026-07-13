@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
-from faceray.core.tracker import FaceLandmarks, TOTAL_LANDMARKS
+from faceray.core.tracker import (
+    FACE_OVAL,
+    FaceLandmarks,
+    LEFT_EYE_RING,
+    LEFT_IRIS,
+    MOUTH,
+    RIGHT_EYE_RING,
+    RIGHT_IRIS,
+    TOTAL_LANDMARKS,
+)
 
 
 def make_landmarks(
@@ -30,6 +41,41 @@ def make_landmarks(
     pixels[:, 0] = np.clip(xs * width, 0.0, width - 1.0)
     pixels[:, 1] = np.clip(ys * height, 0.0, height - 1.0)
     return FaceLandmarks(pixels=pixels, world=world, frame_shape=(height, width))
+
+
+def make_face_landmarks(
+    *, width: int = 640, height: int = 480
+) -> FaceLandmarks:
+    """Build anatomically plausible landmarks (clustered eyes/mouth, oval hull).
+
+    Unlike :func:`make_landmarks` (uniform noise), this places the key feature
+    groups where a real face has them, so the skin mask, eye ROIs, and blur
+    hulls are all well-formed — needed by the smoothing/mask tests.
+    """
+    pix = np.empty((TOTAL_LANDMARKS, 2), dtype=np.float32)
+    pix[:, 0] = 0.5 * width
+    pix[:, 1] = 0.5 * height
+
+    def place(indices: tuple[int, ...], cx: float, cy: float, r: float) -> None:
+        n = len(indices)
+        for j, idx in enumerate(indices):
+            a = 2.0 * math.pi * j / n
+            pix[idx] = ((cx + r * math.cos(a)) * width, (cy + r * math.sin(a)) * height)
+
+    place(FACE_OVAL, 0.5, 0.5, 0.30)  # large silhouette (r scaled below for y)
+    for idx in FACE_OVAL:  # stretch the oval vertically
+        pix[idx, 1] = (0.5 + (pix[idx, 1] / height - 0.5) * 1.25) * height
+    place(LEFT_EYE_RING, 0.40, 0.42, 0.03)
+    place(RIGHT_EYE_RING, 0.60, 0.42, 0.03)
+    place(LEFT_IRIS, 0.405, 0.42, 0.010)
+    place(RIGHT_IRIS, 0.595, 0.42, 0.010)
+    place(MOUTH, 0.50, 0.63, 0.04)
+
+    world = np.empty((TOTAL_LANDMARKS, 3), dtype=np.float32)
+    world[:, 0] = pix[:, 0] / width
+    world[:, 1] = pix[:, 1] / height
+    world[:, 2] = 0.0
+    return FaceLandmarks(pixels=pix, world=world, frame_shape=(height, width))
 
 
 @pytest.fixture()

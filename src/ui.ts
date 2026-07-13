@@ -1,12 +1,14 @@
 /**
- * Control-panel widgets (framework-free DOM).
+ * Control-panel UI (framework-free DOM).
  *
- * Builds the light/effect controls, owns the working `ControlState`, and calls
- * `onChange` with a fresh copy after every edit. Presentation only — no IPC
- * here; `main.ts` connects `onChange` to the typed control client.
+ * Two vertical partitions: a fixed 16:9 preview pane on top, and a grid of four
+ * feature cards below (Gaze, Face anonymizer, Background blur, Face smoothing).
+ * Presentation only — no IPC here; `main.ts` connects `onChange` to the typed
+ * control client. The panel owns a working `ControlState` and calls `onChange`
+ * with a fresh copy after every edit.
  */
 
-import type { BlurMode, ControlState } from "./ipc";
+import type { ControlState } from "./ipc";
 
 export interface PanelHandle {
   /** Update the small live-status readout in the title bar. */
@@ -28,13 +30,25 @@ function makeEl<K extends keyof HTMLElementTagNameMap>(
   return el;
 }
 
-function group(title: string): HTMLElement {
-  const section = makeEl("section", "group");
-  section.append(makeEl("h2", "group-title", title));
-  return section;
+function makeSwitch(initial: boolean, onChange: (value: boolean) => void): HTMLButtonElement {
+  const sw = makeEl("button", "switch");
+  sw.type = "button";
+  sw.setAttribute("role", "switch");
+  let on = initial;
+  const paint = () => {
+    sw.setAttribute("aria-checked", String(on));
+    sw.classList.toggle("switch--on", on);
+  };
+  paint();
+  sw.addEventListener("click", () => {
+    on = !on;
+    paint();
+    onChange(on);
+  });
+  return sw;
 }
 
-function sliderRow(
+function sliderControl(
   label: string,
   min: number,
   max: number,
@@ -42,12 +56,12 @@ function sliderRow(
   initial: number,
   onInput: (value: number) => void,
 ): HTMLElement {
-  const row = makeEl("div", "row");
-  const head = makeEl("div", "row-head");
-  const value = makeEl("span", "row-value", initial.toFixed(2));
-  head.append(makeEl("label", "row-label", label), value);
+  const row = makeEl("div", "slider");
+  const head = makeEl("div", "slider__head");
+  const value = makeEl("span", "slider__value", initial.toFixed(2));
+  head.append(makeEl("span", "slider__label", label), value);
 
-  const input = makeEl("input", "slider");
+  const input = makeEl("input", "slider__input");
   input.type = "range";
   input.min = String(min);
   input.max = String(max);
@@ -63,72 +77,20 @@ function sliderRow(
   return row;
 }
 
-function toggleRow(
-  label: string,
-  initial: boolean,
-  onChange: (value: boolean) => void,
+function featureCard(
+  title: string,
+  note: string,
+  toggle: HTMLElement,
+  slider?: HTMLElement,
 ): HTMLElement {
-  const row = makeEl("div", "row row--inline");
-  const sw = makeEl("button", "switch");
-  sw.type = "button";
-  sw.setAttribute("role", "switch");
-
-  let on = initial;
-  const paint = () => {
-    sw.setAttribute("aria-checked", String(on));
-    sw.classList.toggle("switch--on", on);
-  };
-  paint();
-  sw.addEventListener("click", () => {
-    on = !on;
-    paint();
-    onChange(on);
-  });
-
-  row.append(makeEl("label", "row-label", label), sw);
-  return row;
+  const card = makeEl("div", "card");
+  const head = makeEl("div", "card__head");
+  head.append(makeEl("h3", "card__title", title), toggle);
+  card.append(head, makeEl("p", "card__note", note));
+  if (slider !== undefined) card.append(slider);
+  return card;
 }
 
-function segmentedRow(
-  label: string,
-  options: readonly string[],
-  initial: string,
-  onChange: (value: string) => void,
-): HTMLElement {
-  const row = makeEl("div", "row");
-  const head = makeEl("div", "row-head");
-  head.append(makeEl("label", "row-label", label));
-
-  const seg = makeEl("div", "segmented");
-  const buttons: HTMLButtonElement[] = [];
-  const select = (value: string) => {
-    for (const b of buttons) {
-      b.classList.toggle("segmented__btn--on", b.dataset.value === value);
-    }
-  };
-  for (const opt of options) {
-    const btn = makeEl("button", "segmented__btn", opt);
-    btn.type = "button";
-    btn.dataset.value = opt;
-    btn.addEventListener("click", () => {
-      select(opt);
-      onChange(opt);
-    });
-    buttons.push(btn);
-    seg.append(btn);
-  }
-  select(initial);
-
-  row.append(head, seg);
-  return row;
-}
-
-const BLUR_MODES = ["off", "face", "background"] as const;
-
-/**
- * Render the control panel into `root` and wire every widget to mutate a
- * working ControlState and notify `onChange`.
- */
 export function mountControlPanel(
   root: HTMLElement,
   initial: ControlState,
@@ -140,6 +102,7 @@ export function mountControlPanel(
 
   root.innerHTML = "";
 
+  // -- Title bar ----------------------------------------------------------
   const titlebar = makeEl("header", "titlebar");
   titlebar.setAttribute("data-tauri-drag-region", "");
   const statusEl = makeEl(
@@ -149,10 +112,7 @@ export function mountControlPanel(
   );
   titlebar.append(makeEl("span", "brand", "FaceRay"), statusEl);
 
-  const panel = makeEl("main", "panel");
-
-  // A strict aspect-ratio container guarantees the preview keeps its
-  // composition when the window is scaled or minimized (no warping/collapse).
+  // -- Preview pane (fixed 16:9) ------------------------------------------
   const preview = makeEl("figure", "preview");
   const previewFrame = makeEl("div", "preview__frame");
   const previewImg = makeEl("img", "preview__img");
@@ -170,56 +130,57 @@ export function mountControlPanel(
   previewFrame.append(previewImg, previewNote);
   preview.append(previewFrame);
 
-  // Primary feature: eye-contact / gaze correction leads the panel.
-  const eyeContact = group("Eye contact");
-  eyeContact.append(
-    toggleRow("Gaze correction", state.gaze_enabled, (v) => {
+  // -- Control panel: four feature cards ----------------------------------
+  const cards = makeEl("section", "cards");
+
+  const gazeCard = featureCard(
+    "Gaze correction",
+    "Remap your eyes back toward the lens for natural eye contact.",
+    makeSwitch(state.gaze_enabled, (v) => {
       state.gaze_enabled = v;
       emit();
     }),
-    sliderRow("Smoothing", 0, 0.98, 0.02, state.gaze_smoothing, (v) => {
-      state.gaze_smoothing = v;
+    sliderControl("Sensitivity", 0, 1, 0.02, state.gaze_sensitivity, (v) => {
+      state.gaze_sensitivity = v;
       emit();
     }),
   );
 
-  const effects = group("Effects");
-  effects.append(
-    toggleRow("Relighting", state.relight_enabled, (v) => {
-      state.relight_enabled = v;
-      emit();
-    }),
-    segmentedRow("Blur", BLUR_MODES, state.blur_mode, (v) => {
-      state.blur_mode = v as BlurMode;
+  const anonymiseCard = featureCard(
+    "Face anonymizer",
+    "Heavy privacy blur over your face only; background stays sharp.",
+    makeSwitch(state.face_blur_enabled, (v) => {
+      state.face_blur_enabled = v;
       emit();
     }),
   );
 
-  const light = group("Light");
-  light.append(
-    sliderRow("Direction X", -1, 1, 0.05, state.light_x, (v) => {
-      state.light_x = v;
-      emit();
-    }),
-    sliderRow("Direction Y", -1, 1, 0.05, state.light_y, (v) => {
-      state.light_y = v;
-      emit();
-    }),
-    sliderRow("Direction Z", -1, 1, 0.05, state.light_z, (v) => {
-      state.light_z = v;
-      emit();
-    }),
-    sliderRow("Intensity", 0, 2, 0.05, state.intensity, (v) => {
-      state.intensity = v;
-      emit();
-    }),
-    sliderRow("Ambient", 0, 1, 0.05, state.ambient, (v) => {
-      state.ambient = v;
+  const backgroundCard = featureCard(
+    "Background blur",
+    "Depth-of-field blur behind you; your face stays crisp.",
+    makeSwitch(state.background_blur_enabled, (v) => {
+      state.background_blur_enabled = v;
       emit();
     }),
   );
 
-  panel.append(preview, eyeContact, effects, light);
+  const smoothingCard = featureCard(
+    "Face smoothing",
+    "Real-time skin smoothing that keeps eyes and lips sharp.",
+    makeSwitch(state.smoothing_enabled, (v) => {
+      state.smoothing_enabled = v;
+      emit();
+    }),
+    sliderControl("Intensity", 0, 1, 0.02, state.smoothing_strength, (v) => {
+      state.smoothing_strength = v;
+      emit();
+    }),
+  );
+
+  cards.append(gazeCard, anonymiseCard, backgroundCard, smoothingCard);
+
+  const panel = makeEl("main", "panel");
+  panel.append(preview, cards);
   root.append(titlebar, panel);
 
   return {

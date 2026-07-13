@@ -1,10 +1,10 @@
-/* macOS-native-leaning control panel. */
+/* Utility-first, macOS-native control panel: preview pane + feature cards. */
 
 :root {
   color-scheme: light dark;
   --bg: #ececee;
   --panel: rgba(255, 255, 255, 0.72);
-  --group: rgba(255, 255, 255, 0.55);
+  --card: rgba(255, 255, 255, 0.66);
   --text: #1d1d1f;
   --muted: #6e6e73;
   --accent: #0a84ff;
@@ -19,7 +19,7 @@
   :root {
     --bg: #1c1c1e;
     --panel: rgba(38, 38, 40, 0.72);
-    --group: rgba(58, 58, 60, 0.5);
+    --card: rgba(58, 58, 60, 0.5);
     --text: #f5f5f7;
     --muted: #98989d;
     --track: rgba(255, 255, 255, 0.2);
@@ -78,7 +78,7 @@ body {
   white-space: nowrap;
 }
 
-/* ── Panel + groups ─────────────────────────────────────────────────── */
+/* ── Panel (scroll container) ───────────────────────────────────────── */
 .panel {
   flex: 1;
   overflow-y: auto;
@@ -88,19 +88,16 @@ body {
   gap: 16px;
 }
 
-/* ── Preview ────────────────────────────────────────────────────────── */
+/* ── Preview pane (fixed 16:9) ──────────────────────────────────────── */
 .preview {
   margin: 0;
-  /* Never let the flex column squash the preview when the window shrinks. */
-  flex: 0 0 auto;
+  flex: 0 0 auto; /* never let the flex column squash the preview */
 }
 
 .preview__frame {
   position: relative;
   width: 100%;
-  /* Fixed camera aspect ratio: the box height tracks its width, so scaling or
-     minimizing the window preserves composition instead of warping/collapsing. */
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 16 / 9; /* fixed camera ratio; resizing can't distort it */
   border-radius: 12px;
   overflow: hidden;
   background: #000;
@@ -114,8 +111,7 @@ body {
 .preview__img {
   width: 100%;
   height: 100%;
-  /* Fill the fixed-ratio box without ever distorting the image. */
-  object-fit: cover;
+  object-fit: cover; /* fill the box without distorting the image */
   display: none;
 }
 
@@ -132,58 +128,69 @@ body {
   text-align: center;
 }
 
-.group {
-  background: var(--group);
+/* ── Feature cards (grid) ───────────────────────────────────────────── */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: var(--card);
   border: 1px solid var(--hairline);
   border-radius: 12px;
-  padding: 6px 14px 12px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.group-title {
-  margin: 8px 0 6px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
-
-/* ── Rows ───────────────────────────────────────────────────────────── */
-.row {
-  padding: 8px 0;
-  border-top: 1px solid var(--hairline);
-}
-
-.row:first-of-type {
-  border-top: none;
-}
-
-.row--inline {
+.card__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
 }
 
-.row-head {
+.card__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.card__note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* ── Slider ─────────────────────────────────────────────────────────── */
+.slider {
+  margin-top: 2px;
+}
+
+.slider__head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
-.row-label {
-  font-weight: 500;
+.slider__label {
+  font-size: 12px;
+  color: var(--muted);
 }
 
-.row-value {
+.slider__value {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   font-family: "SF Mono", ui-monospace, Menlo, monospace;
   font-size: 12px;
 }
 
-/* ── Slider ─────────────────────────────────────────────────────────── */
-.slider {
+.slider__input {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
@@ -191,10 +198,9 @@ body {
   border-radius: 999px;
   background: var(--track);
   outline: none;
-  margin: 6px 0 2px;
 }
 
-.slider::-webkit-slider-thumb {
+.slider__input::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 18px;
@@ -206,7 +212,7 @@ body {
   cursor: pointer;
 }
 
-.slider:focus-visible {
+.slider__input:focus-visible {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
@@ -242,32 +248,4 @@ body {
 
 .switch--on::after {
   transform: translateX(16px);
-}
-
-/* ── Segmented control ──────────────────────────────────────────────── */
-.segmented {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--track);
-}
-
-.segmented__btn {
-  flex: 1;
-  padding: 5px 8px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  text-transform: capitalize;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.segmented__btn--on {
-  background: var(--panel);
-  box-shadow: var(--shadow);
-  font-weight: 600;
 }

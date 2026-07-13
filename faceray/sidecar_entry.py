@@ -42,33 +42,27 @@ from typing import Any, Dict, Optional, Tuple
 import cv2
 import numpy as np
 
-from faceray.core import FaceTracker, Modifier, Relighter
-from faceray.core.modifier import BlurMode
+from faceray.core import FaceTracker, Modifier
 from faceray.drivers import VirtualSink
 from faceray.drivers.preview_server import PreviewServer
 from faceray.drivers.virtual_sink import VirtualSinkError
-
-# Gaze strength applied when gaze correction is enabled (matches app.py).
-_GAZE_ON_STRENGTH: float = 0.7
 
 
 @dataclass
 class SidecarControl:
     """Control-plane state received from the UI. Mirrors Rust/TS ``ControlState``.
 
-    Defaults match the ``faceray.core`` constructor defaults so the very first
-    frame (before any control message arrives) looks identical to the CLI.
+    Four independent face-interaction features; no lighting. Defaults match the
+    :class:`~faceray.core.Modifier` constructor so the first frame (before any
+    control message) is well defined.
     """
 
-    light_x: float = 0.4
-    light_y: float = -0.3
-    light_z: float = -1.0
-    intensity: float = 0.6
-    ambient: float = 0.55
     gaze_enabled: bool = True
-    gaze_smoothing: float = 0.6
-    relight_enabled: bool = True
-    blur_mode: BlurMode = BlurMode.OFF
+    gaze_sensitivity: float = 0.7
+    face_blur_enabled: bool = False
+    background_blur_enabled: bool = False
+    smoothing_enabled: bool = False
+    smoothing_strength: float = 0.5
 
     @classmethod
     def from_dict(
@@ -80,18 +74,17 @@ class SidecarControl:
         single changed field still produces a valid, fully-populated state.
         """
         base = base or cls()
-        raw_mode = data.get("blur_mode", base.blur_mode.value)
-        blur = raw_mode if isinstance(raw_mode, BlurMode) else BlurMode(str(raw_mode))
         return cls(
-            light_x=float(data.get("light_x", base.light_x)),
-            light_y=float(data.get("light_y", base.light_y)),
-            light_z=float(data.get("light_z", base.light_z)),
-            intensity=float(data.get("intensity", base.intensity)),
-            ambient=float(data.get("ambient", base.ambient)),
             gaze_enabled=bool(data.get("gaze_enabled", base.gaze_enabled)),
-            gaze_smoothing=float(data.get("gaze_smoothing", base.gaze_smoothing)),
-            relight_enabled=bool(data.get("relight_enabled", base.relight_enabled)),
-            blur_mode=blur,
+            gaze_sensitivity=float(data.get("gaze_sensitivity", base.gaze_sensitivity)),
+            face_blur_enabled=bool(data.get("face_blur_enabled", base.face_blur_enabled)),
+            background_blur_enabled=bool(
+                data.get("background_blur_enabled", base.background_blur_enabled)
+            ),
+            smoothing_enabled=bool(data.get("smoothing_enabled", base.smoothing_enabled)),
+            smoothing_strength=float(
+                data.get("smoothing_strength", base.smoothing_strength)
+            ),
         )
 
     @classmethod
@@ -102,31 +95,21 @@ class SidecarControl:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "light_x": self.light_x,
-            "light_y": self.light_y,
-            "light_z": self.light_z,
-            "intensity": self.intensity,
-            "ambient": self.ambient,
             "gaze_enabled": self.gaze_enabled,
-            "gaze_smoothing": self.gaze_smoothing,
-            "relight_enabled": self.relight_enabled,
-            "blur_mode": self.blur_mode.value,
+            "gaze_sensitivity": self.gaze_sensitivity,
+            "face_blur_enabled": self.face_blur_enabled,
+            "background_blur_enabled": self.background_blur_enabled,
+            "smoothing_enabled": self.smoothing_enabled,
+            "smoothing_strength": self.smoothing_strength,
         }
 
-    def apply(self, relighter: Relighter, modifier: Modifier) -> None:
-        """Push this control state onto the live pipeline engines.
-
-        ``relight_enabled`` is honoured by the caller's processing branch, not
-        here, since it gates whether the relighter runs at all.
-        """
-        vec = (self.light_x, self.light_y, self.light_z)
-        if any(abs(v) > 1e-9 for v in vec):  # setter rejects a zero vector
-            relighter.light_direction = vec
-        relighter.intensity = self.intensity  # property setter clips to [0, 2]
-        relighter.ambient = float(np.clip(self.ambient, 0.0, 1.0))
-        modifier.gaze_strength = _GAZE_ON_STRENGTH if self.gaze_enabled else 0.0
-        modifier.gaze_smoothing = self.gaze_smoothing  # setter clips to [0, 0.98]
-        modifier.blur_mode = self.blur_mode
+    def apply(self, modifier: Modifier) -> None:
+        """Push this control state onto the live pipeline engine."""
+        modifier.gaze_strength = self.gaze_sensitivity if self.gaze_enabled else 0.0
+        modifier.face_blur_enabled = self.face_blur_enabled
+        modifier.background_blur_enabled = self.background_blur_enabled
+        modifier.smoothing_enabled = self.smoothing_enabled
+        modifier.smoothing_strength = self.smoothing_strength
 
 
 class Sidecar:
@@ -138,7 +121,6 @@ class Sidecar:
         self._state = SidecarControl()
         self._shutdown = threading.Event()
 
-        self._relighter = Relighter(use_gpu=not args.no_gpu)
         self._modifier = Modifier()
         self._mirror = not args.no_mirror
 
@@ -295,15 +277,11 @@ class Sidecar:
         self, frame: np.ndarray, state: SidecarControl
     ) -> Tuple[np.ndarray, bool]:
         assert self._tracker is not None
-        state.apply(self._relighter, self._modifier)
+        state.apply(self._modifier)
         landmarks = self._tracker.process(frame)
         if landmarks is None:
             return frame, False
-        out = frame
-        if state.relight_enabled:
-            out = self._relighter.apply(out, landmarks)
-        out = self._modifier.apply(out, landmarks)
-        return out, True
+        return self._modifier.apply(frame, landmarks), True
 
     def _pace(self, frame_start: float) -> None:
         if self._args.fps <= 0:
@@ -330,7 +308,6 @@ class Sidecar:
             "type": "ready",
             "width": self._args.width,
             "height": self._args.height,
-            "gpu": self._relighter.gpu_active,
             "sink": self._sink.device_name if self._sink is not None else None,
             "preview": self._preview.url if self._preview is not None else None,
             "state": initial,
@@ -393,8 +370,6 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=1280, help="Capture width.")
     parser.add_argument("--height", type=int, default=720, help="Capture height.")
     parser.add_argument("--fps", type=float, default=30.0, help="Target frame rate.")
-    parser.add_argument("--no-gpu", action="store_true",
-                        help="Force the CPU (NumPy) shading path.")
     parser.add_argument("--no-sink", action="store_true",
                         help="Skip the virtual camera (process frames only).")
     parser.add_argument("--no-mirror", action="store_true",

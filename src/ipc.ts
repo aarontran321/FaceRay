@@ -9,25 +9,17 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-export type BlurMode = "off" | "face" | "background";
-
 export interface ControlState {
-  /** Virtual light direction (MediaPipe landmark space): +x right, +y down,
-   *  +z away from camera. Normalized by the Python relighter on receipt. */
-  light_x: number;
-  light_y: number;
-  light_z: number;
-  /** Relight blend weight in [0, 2]. */
-  intensity: number;
-  /** Ambient floor in [0, 1]. */
-  ambient: number;
-  /** Eye-contact / gaze correction toggle and its temporal smoothing
-   *  ([0, 0.98]; higher = steadier, lower = snappier). */
+  /** Eye-contact / gaze correction: on/off and tracking sensitivity [0, 1]. */
   gaze_enabled: boolean;
-  gaze_smoothing: number;
-  /** Other effect toggles. */
-  relight_enabled: boolean;
-  blur_mode: BlurMode;
+  gaze_sensitivity: number;
+  /** Face anonymiser — heavy opaque blur over the face only. */
+  face_blur_enabled: boolean;
+  /** Depth-of-field background blur; the face stays crisp. */
+  background_blur_enabled: boolean;
+  /** Skin smoothing (beauty filter): on/off and intensity [0, 1]. */
+  smoothing_enabled: boolean;
+  smoothing_strength: number;
 }
 
 /** True only when running inside the Tauri webview (not a bare browser tab). */

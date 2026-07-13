@@ -6,10 +6,6 @@ import json
 import subprocess
 import sys
 
-import pytest
-
-from faceray.core.modifier import BlurMode
-from faceray.core.relighter import Relighter
 from faceray.core.modifier import Modifier
 from faceray.sidecar_entry import SidecarControl
 
@@ -17,61 +13,59 @@ from faceray.sidecar_entry import SidecarControl
 def test_from_dict_full_payload() -> None:
     c = SidecarControl.from_dict(
         {
-            "light_x": 0.1,
-            "light_y": 0.2,
-            "light_z": -0.9,
-            "intensity": 1.3,
-            "ambient": 0.25,
-            "relight_enabled": False,
             "gaze_enabled": False,
-            "blur_mode": "background",
+            "gaze_sensitivity": 0.4,
+            "face_blur_enabled": True,
+            "background_blur_enabled": True,
+            "smoothing_enabled": True,
+            "smoothing_strength": 0.8,
         }
     )
-    assert c.intensity == 1.3
-    assert c.relight_enabled is False
-    assert c.blur_mode is BlurMode.BACKGROUND
+    assert c.gaze_enabled is False
+    assert c.gaze_sensitivity == 0.4
+    assert c.face_blur_enabled is True
+    assert c.smoothing_strength == 0.8
 
 
 def test_from_dict_partial_inherits_base() -> None:
-    base = SidecarControl(intensity=1.9, blur_mode=BlurMode.FACE)
+    base = SidecarControl(smoothing_strength=0.9, face_blur_enabled=True)
     merged = SidecarControl.from_dict({"gaze_enabled": False}, base=base)
-    assert merged.intensity == 1.9  # inherited
-    assert merged.blur_mode is BlurMode.FACE  # inherited
+    assert merged.smoothing_strength == 0.9  # inherited
+    assert merged.face_blur_enabled is True  # inherited
     assert merged.gaze_enabled is False  # overridden
 
 
 def test_from_json_roundtrips_through_to_dict() -> None:
-    original = SidecarControl(light_x=0.2, intensity=1.1, blur_mode=BlurMode.FACE)
+    original = SidecarControl(
+        gaze_sensitivity=0.55, smoothing_enabled=True, background_blur_enabled=True
+    )
     clone = SidecarControl.from_json(json.dumps(original.to_dict()))
     assert clone == original
 
 
-def test_invalid_blur_mode_rejected() -> None:
-    with pytest.raises(ValueError):
-        SidecarControl.from_dict({"blur_mode": "sideways"})
-
-
-def test_apply_pushes_state_onto_engines() -> None:
-    relighter = Relighter(use_gpu=False)
+def test_apply_pushes_state_onto_modifier() -> None:
     modifier = Modifier()
     control = SidecarControl(
-        light_x=0.0, light_y=0.0, light_z=-2.0,
-        intensity=5.0, ambient=2.0, gaze_enabled=False, blur_mode=BlurMode.FACE,
+        gaze_enabled=False,
+        gaze_sensitivity=0.9,
+        face_blur_enabled=True,
+        background_blur_enabled=True,
+        smoothing_enabled=True,
+        smoothing_strength=0.7,
     )
-    control.apply(relighter, modifier)
+    control.apply(modifier)
 
-    assert relighter.intensity == 2.0  # clipped to [0, 2]
-    assert relighter.ambient == 1.0  # clipped to [0, 1]
-    assert relighter.light_direction == pytest.approx((0.0, 0.0, -1.0))  # normalized
-    assert modifier.gaze_strength == 0.0  # gaze disabled
-    assert modifier.blur_mode is BlurMode.FACE
+    assert modifier.gaze_strength == 0.0  # gaze disabled -> strength zeroed
+    assert modifier.face_blur_enabled is True
+    assert modifier.background_blur_enabled is True
+    assert modifier.smoothing_enabled is True
+    assert modifier.smoothing_strength == 0.7
 
 
-def test_apply_ignores_zero_light_vector() -> None:
-    relighter = Relighter(light_direction=(0.4, -0.3, -1.0), use_gpu=False)
-    before = relighter.light_direction
-    SidecarControl(light_x=0.0, light_y=0.0, light_z=0.0).apply(relighter, Modifier())
-    assert relighter.light_direction == before  # zero vector left the light untouched
+def test_apply_gaze_sensitivity_maps_to_strength() -> None:
+    modifier = Modifier()
+    SidecarControl(gaze_enabled=True, gaze_sensitivity=0.35).apply(modifier)
+    assert modifier.gaze_strength == 0.35
 
 
 def _run_sidecar(control_lines: list[str], extra_args: list[str]) -> list[dict]:
@@ -89,8 +83,8 @@ def _run_sidecar(control_lines: list[str], extra_args: list[str]) -> list[dict]:
 def test_stdio_roundtrip_and_graceful_shutdown() -> None:
     """Full process: emits ready, acks a control line, and exits on stdin EOF."""
     events = _run_sidecar(
-        ['{"blur_mode":"face","intensity":1.2}'],
-        ["--synthetic", "--no-sink", "--no-gpu", "--max-frames", "3",
+        ['{"face_blur_enabled":true,"smoothing_strength":0.8}'],
+        ["--synthetic", "--no-sink", "--max-frames", "3",
          "--status-every", "1", "--fps", "120"],
     )
     types = [e["type"] for e in events]
@@ -99,14 +93,14 @@ def test_stdio_roundtrip_and_graceful_shutdown() -> None:
 
     acks = [e for e in events if e["type"] == "ack"]
     assert acks, "expected at least one ack for the control line"
-    assert acks[0]["state"]["blur_mode"] == "face"
-    assert acks[0]["state"]["intensity"] == 1.2
+    assert acks[0]["state"]["face_blur_enabled"] is True
+    assert acks[0]["state"]["smoothing_strength"] == 0.8
 
 
 def test_stdio_reports_bad_payload() -> None:
     events = _run_sidecar(
         ["not-json-at-all"],
-        ["--synthetic", "--no-sink", "--no-gpu", "--max-frames", "1"],
+        ["--synthetic", "--no-sink", "--max-frames", "1"],
     )
     assert any(e["type"] == "error" for e in events)
     assert any(e["type"] == "bye" for e in events)  # channel survived the bad line
