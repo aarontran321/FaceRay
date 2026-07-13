@@ -36,9 +36,12 @@ pub struct ControlState {
     pub intensity: f32,
     /// Ambient floor in `[0, 1]`.
     pub ambient: f32,
-    /// Effect toggles.
-    pub relight_enabled: bool,
+    /// Eye-contact / gaze correction toggle and its temporal smoothing
+    /// (`[0, 0.98]`; higher = steadier, lower = snappier).
     pub gaze_enabled: bool,
+    pub gaze_smoothing: f32,
+    /// Other effect toggles.
+    pub relight_enabled: bool,
     pub blur_mode: BlurMode,
 }
 
@@ -51,8 +54,9 @@ impl Default for ControlState {
             light_z: -1.0,
             intensity: 0.6,
             ambient: 0.55,
-            relight_enabled: true,
             gaze_enabled: true,
+            gaze_smoothing: 0.6,
+            relight_enabled: true,
             blur_mode: BlurMode::Off,
         }
     }

@@ -129,11 +129,20 @@ Phase 1 of the desktop migration (D-Tasks 1–3) is complete, plus a live previe
 the sidecar serves processed frames as a **loopback MJPEG stream**
 (`drivers/preview_server.py`, enabled via `--preview`; URL announced in the
 `ready` event) that the webview's `<img>` pulls directly — frame data never
-crosses the Rust/TS IPC. macOS camera access requires `NSCameraUsageDescription`
-(in `src-tauri/Info.plist`) for the packaged app, or Camera permission on the
-launching terminal for `tauri dev`; the sidecar shows an in-frame placeholder if
-the camera is unavailable. Next up: packaging a signed `.app` (PyInstaller
-sidecar via `build_sidecar.sh --release`).
+crosses the Rust/TS IPC. The feed is mirrored at ingestion (`--no-mirror` to
+disable) and streamed near-losslessly (JPEG q95) for crisp texture; the preview
+lives in a fixed 16:9 aspect-ratio container so window resizing can't distort it.
+macOS camera access requires `NSCameraUsageDescription` (in `src-tauri/Info.plist`)
+for the packaged app, or Camera permission on the launching terminal for
+`tauri dev`; the sidecar shows an in-frame placeholder if the camera is
+unavailable.
+
+The product's **primary feature is eye-contact/gaze correction**
+(`core/modifier.py`): the iris-recentre warp uses a per-eye temporal EMA
+(`gaze_smoothing`, exposed as a live control) to glide without jitter. Lighting
+is secondary. `ControlState` now carries `gaze_smoothing` — keep it in all three
+mirrors (`ipc.rs` / `ipc.ts` / `SidecarControl`). Next up: packaging a signed
+`.app` (PyInstaller sidecar via `build_sidecar.sh --release`).
 
 ## Testing
 

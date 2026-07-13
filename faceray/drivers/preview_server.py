@@ -33,9 +33,10 @@ class PreviewServer:
         host: Interface to bind; loopback only by default.
         port: TCP port, or ``0`` to let the OS pick a free one (read it back
             from :attr:`port` after :meth:`start`).
-        quality: JPEG quality (1-100) for the encoded stream.
-        max_width: Downscale frames wider than this before encoding, to keep
-            the preview light. ``0`` disables downscaling.
+        quality: JPEG quality (1-100) for the encoded stream. Defaults to a
+            near-lossless 95 to preserve crisp facial/skin texture.
+        max_width: Downscale frames wider than this before encoding. Defaults
+            to 1280 so the preview stays sharp; ``0`` disables downscaling.
     """
 
     def __init__(
@@ -43,8 +44,8 @@ class PreviewServer:
         *,
         host: str = "127.0.0.1",
         port: int = 0,
-        quality: int = 70,
-        max_width: int = 640,
+        quality: int = 95,
+        max_width: int = 1280,
     ) -> None:
         self._host = host
         self._req_port = int(port)

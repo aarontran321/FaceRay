@@ -173,19 +173,27 @@ control that dispatch debounced `ControlState` updates through the typed IPC
 client. Verified via `cargo check` + `cargo test`, `vite build`, a 30-test
 `pytest` suite, and interactive UI checks.
 
-The control panel (live preview on top; light sliders, effect switches, blur
-segmented control below):
+The control panel leads with **eye contact** (the primary feature), then other
+effects, then lighting; the live preview sits on top in a fixed 16:9 frame that
+holds its composition when the window is resized:
 
 ```
 ┌ FaceRay ───────────────── 30 fps · face ✓ ┐
-│ ┌────────── live camera preview ─────────┐ │
+│ ┌────── live 16:9 camera preview ────────┐ │
 │ └────────────────────────────────────────┘ │
-│ LIGHT                                      │
-│   Direction X / Y / Z   Intensity  Ambient │
+│ EYE CONTACT                                │
+│   Gaze correction ●   Smoothing ──●──      │
 │ EFFECTS                                     │
-│   Relighting ●   Gaze ●   Blur [Off|Face|Bg]│
+│   Relighting ●   Blur [Off|Face|Bg]        │
+│ LIGHT                                       │
+│   Direction X / Y / Z   Intensity  Ambient │
 └────────────────────────────────────────────┘
 ```
+
+The feed is mirrored at ingestion (natural webcam-mirror behavior) and streamed
+near-losslessly (JPEG q95) so facial texture stays crisp. Gaze correction uses a
+temporal EMA (the **Smoothing** slider) so the iris re-centres fluidly without
+jitter as you glance between the lens and your monitor.
 
 ### Live preview
 

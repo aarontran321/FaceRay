@@ -24,8 +24,9 @@ const FALLBACK: ControlState = {
   light_z: -1.0,
   intensity: 0.6,
   ambient: 0.55,
-  relight_enabled: true,
   gaze_enabled: true,
+  gaze_smoothing: 0.6,
+  relight_enabled: true,
   blur_mode: "off",
 };
 

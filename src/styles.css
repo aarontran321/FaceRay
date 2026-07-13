@@ -90,8 +90,16 @@ body {
 
 /* ── Preview ────────────────────────────────────────────────────────── */
 .preview {
-  position: relative;
   margin: 0;
+  /* Never let the flex column squash the preview when the window shrinks. */
+  flex: 0 0 auto;
+}
+
+.preview__frame {
+  position: relative;
+  width: 100%;
+  /* Fixed camera aspect ratio: the box height tracks its width, so scaling or
+     minimizing the window preserves composition instead of warping/collapsing. */
   aspect-ratio: 16 / 9;
   border-radius: 12px;
   overflow: hidden;
@@ -106,6 +114,7 @@ body {
 .preview__img {
   width: 100%;
   height: 100%;
+  /* Fill the fixed-ratio box without ever distorting the image. */
   object-fit: cover;
   display: none;
 }

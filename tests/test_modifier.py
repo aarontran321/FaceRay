@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from faceray.core.modifier import BlurMode, Modifier
-from faceray.core.tracker import LEFT_EYE_RING
+from faceray.core.tracker import LEFT_EYE_RING, LEFT_IRIS
 from tests.conftest import make_landmarks
 
 
@@ -97,3 +97,38 @@ def test_apply_full_pipeline_shape(frame: np.ndarray) -> None:
     m = Modifier(gaze_strength=0.7, blur_mode=BlurMode.BACKGROUND)
     out = m.apply(frame, lm)
     assert out.shape == frame.shape and out.dtype == np.uint8
+
+
+def test_gaze_smoothing_clamped() -> None:
+    m = Modifier(gaze_smoothing=5.0)
+    assert m.gaze_smoothing == 0.98  # capped below 1 so the warp can't freeze
+    m.gaze_smoothing = -1.0
+    assert m.gaze_smoothing == 0.0
+
+
+def test_gaze_smoothing_blends_between_frames(frame: np.ndarray) -> None:
+    """The EMA blends the previous shift with the new target, not snapping."""
+    a = make_landmarks(seed=1)
+    b = make_landmarks(seed=2)
+    m = Modifier(gaze_strength=0.7, gaze_smoothing=0.6)
+
+    m.correct_gaze(frame, a)
+    ema1 = m._shift_ema[LEFT_IRIS].copy()
+    target_a = (a.centroid(LEFT_EYE_RING) - a.centroid(LEFT_IRIS)) * 0.7
+    assert np.allclose(ema1, target_a, atol=1e-3)  # first frame: no prior, == target
+
+    m.correct_gaze(frame, b)
+    ema2 = m._shift_ema[LEFT_IRIS]
+    target_b = (b.centroid(LEFT_EYE_RING) - b.centroid(LEFT_IRIS)) * 0.7
+    expected = 0.6 * ema1 + 0.4 * target_b
+    assert np.allclose(ema2, expected, atol=1e-3)
+
+
+def test_gaze_smoothing_state_cleared_on_disable(frame: np.ndarray) -> None:
+    lm = make_landmarks()
+    m = Modifier(gaze_strength=0.7)
+    m.correct_gaze(frame, lm)
+    assert m._shift_ema  # populated while active
+    m.gaze_strength = 0.0
+    m.correct_gaze(frame, lm)
+    assert not m._shift_ema  # forgotten so re-enabling starts clean

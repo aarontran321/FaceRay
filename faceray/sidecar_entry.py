@@ -65,8 +65,9 @@ class SidecarControl:
     light_z: float = -1.0
     intensity: float = 0.6
     ambient: float = 0.55
-    relight_enabled: bool = True
     gaze_enabled: bool = True
+    gaze_smoothing: float = 0.6
+    relight_enabled: bool = True
     blur_mode: BlurMode = BlurMode.OFF
 
     @classmethod
@@ -87,8 +88,9 @@ class SidecarControl:
             light_z=float(data.get("light_z", base.light_z)),
             intensity=float(data.get("intensity", base.intensity)),
             ambient=float(data.get("ambient", base.ambient)),
-            relight_enabled=bool(data.get("relight_enabled", base.relight_enabled)),
             gaze_enabled=bool(data.get("gaze_enabled", base.gaze_enabled)),
+            gaze_smoothing=float(data.get("gaze_smoothing", base.gaze_smoothing)),
+            relight_enabled=bool(data.get("relight_enabled", base.relight_enabled)),
             blur_mode=blur,
         )
 
@@ -105,8 +107,9 @@ class SidecarControl:
             "light_z": self.light_z,
             "intensity": self.intensity,
             "ambient": self.ambient,
-            "relight_enabled": self.relight_enabled,
             "gaze_enabled": self.gaze_enabled,
+            "gaze_smoothing": self.gaze_smoothing,
+            "relight_enabled": self.relight_enabled,
             "blur_mode": self.blur_mode.value,
         }
 
@@ -122,6 +125,7 @@ class SidecarControl:
         relighter.intensity = self.intensity  # property setter clips to [0, 2]
         relighter.ambient = float(np.clip(self.ambient, 0.0, 1.0))
         modifier.gaze_strength = _GAZE_ON_STRENGTH if self.gaze_enabled else 0.0
+        modifier.gaze_smoothing = self.gaze_smoothing  # setter clips to [0, 0.98]
         modifier.blur_mode = self.blur_mode
 
 
@@ -136,6 +140,7 @@ class Sidecar:
 
         self._relighter = Relighter(use_gpu=not args.no_gpu)
         self._modifier = Modifier()
+        self._mirror = not args.no_mirror
 
         self._capture: Optional[cv2.VideoCapture] = None
         self._still: Optional[np.ndarray] = None  # image / synthetic source frame
@@ -187,9 +192,13 @@ class Sidecar:
         if not cap.isOpened():
             self._emit({"type": "error", "message": f"cannot open camera {self._args.camera}"})
             return False
+        # Request the native high-resolution stream and a shallow buffer so we
+        # always grab the freshest, full-fidelity frame (no stale/decimated
+        # frames from a deep driver queue).
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
         cap.set(cv2.CAP_PROP_FPS, self._args.fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._capture = cap
         # Adopt the resolution the driver actually granted.
         self._args.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or w
@@ -275,6 +284,11 @@ class Sidecar:
         ok, frame = self._capture.read()
         if not ok or frame is None:
             return None
+        # Mirror at the ingestion layer so the live feed reads like a natural
+        # webcam mirror; every downstream stage (tracker, gaze, preview, sink)
+        # then operates in the same mirrored space.
+        if self._mirror:
+            frame = cv2.flip(frame, 1)
         return frame
 
     def _process(
@@ -308,9 +322,8 @@ class Sidecar:
             self._teardown()
             return 1
 
-        reader = threading.Thread(target=self._read_stdin, name="stdin-reader", daemon=True)
-        reader.start()
-
+        # Announce readiness (with the preview URL) before accepting control, so
+        # the UI always sees `ready` first and can't race an early `ack`.
         with self._lock:
             initial = self._state.to_dict()
         self._emit({
@@ -322,6 +335,9 @@ class Sidecar:
             "preview": self._preview.url if self._preview is not None else None,
             "state": initial,
         })
+
+        reader = threading.Thread(target=self._read_stdin, name="stdin-reader", daemon=True)
+        reader.start()
 
         frames = 0
         fps_ema = 0.0
@@ -381,13 +397,15 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="Force the CPU (NumPy) shading path.")
     parser.add_argument("--no-sink", action="store_true",
                         help="Skip the virtual camera (process frames only).")
+    parser.add_argument("--no-mirror", action="store_true",
+                        help="Disable the natural horizontal mirror on the live feed.")
     parser.add_argument("--preview", action="store_true",
                         help="Serve an MJPEG preview of the processed feed on loopback.")
     parser.add_argument("--preview-port", type=int, default=0,
                         help="Preview TCP port (0 = OS-assigned).")
-    parser.add_argument("--preview-quality", type=int, default=70,
-                        help="Preview JPEG quality (1-100).")
-    parser.add_argument("--preview-width", type=int, default=640,
+    parser.add_argument("--preview-quality", type=int, default=95,
+                        help="Preview JPEG quality (1-100); near-lossless by default.")
+    parser.add_argument("--preview-width", type=int, default=1280,
                         help="Max preview width in pixels (downscale above this).")
     parser.add_argument("--image", type=str, default=None,
                         help="Loop a static image instead of the webcam (testing).")

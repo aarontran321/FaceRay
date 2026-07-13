@@ -21,9 +21,12 @@ export interface ControlState {
   intensity: number;
   /** Ambient floor in [0, 1]. */
   ambient: number;
-  /** Effect toggles. */
-  relight_enabled: boolean;
+  /** Eye-contact / gaze correction toggle and its temporal smoothing
+   *  ([0, 0.98]; higher = steadier, lower = snappier). */
   gaze_enabled: boolean;
+  gaze_smoothing: number;
+  /** Other effect toggles. */
+  relight_enabled: boolean;
   blur_mode: BlurMode;
 }
 

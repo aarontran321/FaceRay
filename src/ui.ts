@@ -151,7 +151,10 @@ export function mountControlPanel(
 
   const panel = makeEl("main", "panel");
 
+  // A strict aspect-ratio container guarantees the preview keeps its
+  // composition when the window is scaled or minimized (no warping/collapse).
   const preview = makeEl("figure", "preview");
+  const previewFrame = makeEl("div", "preview__frame");
   const previewImg = makeEl("img", "preview__img");
   previewImg.alt = "Live processed camera preview";
   const previewNote = makeEl(
@@ -164,7 +167,33 @@ export function mountControlPanel(
     previewNote.hidden = false;
     previewNote.textContent = "preview unavailable";
   });
-  preview.append(previewImg, previewNote);
+  previewFrame.append(previewImg, previewNote);
+  preview.append(previewFrame);
+
+  // Primary feature: eye-contact / gaze correction leads the panel.
+  const eyeContact = group("Eye contact");
+  eyeContact.append(
+    toggleRow("Gaze correction", state.gaze_enabled, (v) => {
+      state.gaze_enabled = v;
+      emit();
+    }),
+    sliderRow("Smoothing", 0, 0.98, 0.02, state.gaze_smoothing, (v) => {
+      state.gaze_smoothing = v;
+      emit();
+    }),
+  );
+
+  const effects = group("Effects");
+  effects.append(
+    toggleRow("Relighting", state.relight_enabled, (v) => {
+      state.relight_enabled = v;
+      emit();
+    }),
+    segmentedRow("Blur", BLUR_MODES, state.blur_mode, (v) => {
+      state.blur_mode = v as BlurMode;
+      emit();
+    }),
+  );
 
   const light = group("Light");
   light.append(
@@ -190,23 +219,7 @@ export function mountControlPanel(
     }),
   );
 
-  const effects = group("Effects");
-  effects.append(
-    toggleRow("Relighting", state.relight_enabled, (v) => {
-      state.relight_enabled = v;
-      emit();
-    }),
-    toggleRow("Gaze correction", state.gaze_enabled, (v) => {
-      state.gaze_enabled = v;
-      emit();
-    }),
-    segmentedRow("Blur", BLUR_MODES, state.blur_mode, (v) => {
-      state.blur_mode = v as BlurMode;
-      emit();
-    }),
-  );
-
-  panel.append(preview, light, effects);
+  panel.append(preview, eyeContact, effects, light);
   root.append(titlebar, panel);
 
   return {

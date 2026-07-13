@@ -51,6 +51,8 @@ class Modifier:
             in ``[0, 1]``. ``0`` disables correction.
         gaze_max_shift: Hard cap (in pixels) on per-eye translation to keep the
             warp stable when tracking is noisy.
+        gaze_smoothing: Temporal EMA inertia in ``[0, 0.98]`` applied to the
+            per-eye shift; higher is smoother/steadier, lower is snappier.
         blur_mode: Initial :class:`BlurMode`.
         blur_kernel: Odd Gaussian kernel size for the blur pass.
     """
@@ -60,13 +62,20 @@ class Modifier:
         *,
         gaze_strength: float = 0.7,
         gaze_max_shift: float = 12.0,
+        gaze_smoothing: float = 0.6,
         blur_mode: BlurMode = BlurMode.OFF,
         blur_kernel: int = 31,
     ) -> None:
         self.gaze_strength = gaze_strength
         self.gaze_max_shift = float(max(0.0, gaze_max_shift))
+        self.gaze_smoothing = gaze_smoothing
         self.blur_mode = blur_mode
         self.blur_kernel = blur_kernel
+
+        # Per-eye exponential moving average of the recentre shift vector,
+        # keyed by iris landmark set. Smooths out per-frame landmark jitter so
+        # the warp glides instead of twitching. See :meth:`_recentre_eye`.
+        self._shift_ema: dict[Tuple[int, ...], np.ndarray] = {}
 
     # -- Configuration ------------------------------------------------------
     @property
@@ -76,6 +85,20 @@ class Modifier:
     @gaze_strength.setter
     def gaze_strength(self, value: float) -> None:
         self._gaze_strength = float(np.clip(value, 0.0, 1.0))
+
+    @property
+    def gaze_smoothing(self) -> float:
+        """Temporal inertia of the gaze warp in ``[0, 0.98]``.
+
+        ``0`` applies the raw per-frame correction (most responsive, most
+        jittery); higher values blend more of the previous shift for fluid,
+        stable eye contact. Capped below 1 so the warp can never freeze.
+        """
+        return self._gaze_smoothing
+
+    @gaze_smoothing.setter
+    def gaze_smoothing(self, value: float) -> None:
+        self._gaze_smoothing = float(np.clip(value, 0.0, 0.98))
 
     @property
     def blur_kernel(self) -> int:
@@ -109,6 +132,7 @@ class Modifier:
     def correct_gaze(self, frame_bgr: np.ndarray, landmarks: FaceLandmarks) -> np.ndarray:
         """Warp each eye region so the iris re-centres in its aperture."""
         if self._gaze_strength <= 0.0 or not landmarks.has_iris:
+            self._shift_ema.clear()  # forget stale motion so re-enabling is clean
             return frame_bgr
 
         out = frame_bgr
@@ -129,8 +153,20 @@ class Modifier:
         pupil = landmarks.centroid(iris_idx)
         socket = landmarks.centroid(ring_idx)
         offset = socket - pupil  # vector that moves the pupil to centre
+        target = offset * self._gaze_strength
 
-        shift = offset * self._gaze_strength
+        # Blend toward the target with an exponential moving average so noisy
+        # frame-to-frame landmark wobble doesn't jitter the warp; the pupil
+        # glides smoothly to the centre anchor and back as the gaze shifts.
+        prev = self._shift_ema.get(iris_idx)
+        if prev is None:
+            smoothed = target.astype(np.float32)
+        else:
+            alpha = self._gaze_smoothing
+            smoothed = (alpha * prev + (1.0 - alpha) * target).astype(np.float32)
+        self._shift_ema[iris_idx] = smoothed
+
+        shift = smoothed.copy()
         norm = float(np.linalg.norm(shift))
         if norm < 0.5:  # already centred -> nothing to do
             return frame_bgr
