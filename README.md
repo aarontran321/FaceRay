@@ -26,11 +26,17 @@ drivers/virtual_sink.py  →  RGB bytes → system virtual camera (pyvirtualcam)
 
 ## Features
 
-- **Eye-contact / gaze correction.** Iris landmarks (left 468–472, right 473–477)
-  are compared against each eye-socket centre; a bounded affine warp nudges the
-  iris back toward the aperture centre to simulate looking into the lens. A
-  per-eye temporal EMA (sensitivity-controlled) keeps the warp fluid and
-  jitter-free as you glance between the lens and your monitor.
+- **Monitor Gaze Anchor.** Iris landmarks (left 468–472, right 473–477) are
+  anchored not to the dead-centre socket but to a point *slightly below* it (a
+  configurable "attention vector"), so you read as attentively looking at your
+  screen rather than staring into the lens. A per-eye temporal EMA holds the
+  anchor firmly while leaving a little live micro-drift, so the eyes never look
+  like a frozen texture.
+- **Presence control.** A privacy/quality state machine: **Live**, **Freeze**
+  (loop the last processed frame), **Fake Low-Res** (freeze + heavy
+  nearest-neighbour pixelation, i.e. a faked bad connection), and **Stream
+  Low-Res** (stay live but continuously pixelated so motion shows while detail
+  and background text are obscured).
 - **Face smoothing (beauty filter).** An edge-preserving bilateral filter
   confined to the skin region — eyes and mouth carved out so lashes and lips
   stay sharp — with an intensity control.
@@ -148,19 +154,24 @@ status events on stdout:
   | python -m faceray.sidecar_entry --synthetic --no-sink --status-every 30
 ```
 
-The control panel is a fixed 16:9 preview pane on top and a grid of four feature
+The control panel is a fixed 16:9 preview pane on top and a grid of feature
 cards below:
 
 ```
 ┌ FaceRay ───────────────── 30 fps · face ✓ ┐
 │ ┌────── live 16:9 camera preview ────────┐ │
 │ └────────────────────────────────────────┘ │
-│ ┌ Gaze correction ●─┐  ┌ Face anonymizer ○┐│
-│ │ Sensitivity ──●── │  │                  ││
+│ ┌ Monitor Gaze Anchor ●──────────────────┐ │
+│ │ Attention vector ──●──                 │ │
+│ └────────────────────────────────────────┘ │
+│ ┌ Presence control ──────────────────────┐ │
+│ │ [ Live ][ Freeze ][ Fake LR ][ Stream ]│ │
+│ └────────────────────────────────────────┘ │
+│ ┌ Face anonymizer ○─┐  ┌ Background blur ○┐│
 │ └───────────────────┘  └──────────────────┘│
-│ ┌ Background blur ○─┐  ┌ Face smoothing  ○┐│
-│ │                   │  │ Intensity ──●──  ││
-│ └───────────────────┘  └──────────────────┘│
+│ ┌ Face smoothing ○──┐                       │
+│ │ Intensity ──●──   │                       │
+│ └───────────────────┘                       │
 └────────────────────────────────────────────┘
 ```
 

@@ -8,7 +8,7 @@
  * with a fresh copy after every edit.
  */
 
-import type { ControlState } from "./ipc";
+import type { ControlState, PresenceMode } from "./ipc";
 
 export interface PanelHandle {
   /** Update the small live-status readout in the title bar. */
@@ -77,19 +77,55 @@ function sliderControl(
   return row;
 }
 
+function segmentedControl(
+  options: readonly { value: string; label: string }[],
+  initial: string,
+  onChange: (value: string) => void,
+): HTMLElement {
+  const seg = makeEl("div", "segmented");
+  const buttons: HTMLButtonElement[] = [];
+  const select = (value: string) => {
+    for (const b of buttons) {
+      b.classList.toggle("segmented__btn--on", b.dataset.value === value);
+    }
+  };
+  for (const opt of options) {
+    const btn = makeEl("button", "segmented__btn", opt.label);
+    btn.type = "button";
+    btn.dataset.value = opt.value;
+    btn.addEventListener("click", () => {
+      select(opt.value);
+      onChange(opt.value);
+    });
+    buttons.push(btn);
+    seg.append(btn);
+  }
+  select(initial);
+  return seg;
+}
+
 function featureCard(
   title: string,
   note: string,
-  toggle: HTMLElement,
-  slider?: HTMLElement,
+  headerControl: HTMLElement | null,
+  body?: HTMLElement,
+  wide = false,
 ): HTMLElement {
-  const card = makeEl("div", "card");
+  const card = makeEl("div", wide ? "card card--wide" : "card");
   const head = makeEl("div", "card__head");
-  head.append(makeEl("h3", "card__title", title), toggle);
+  head.append(makeEl("h3", "card__title", title));
+  if (headerControl !== null) head.append(headerControl);
   card.append(head, makeEl("p", "card__note", note));
-  if (slider !== undefined) card.append(slider);
+  if (body !== undefined) card.append(body);
   return card;
 }
+
+const PRESENCE_OPTIONS = [
+  { value: "live", label: "Live" },
+  { value: "freeze", label: "Freeze" },
+  { value: "fake_lowres", label: "Fake Low-Res" },
+  { value: "stream_lowres", label: "Stream Low-Res" },
+] as const;
 
 export function mountControlPanel(
   root: HTMLElement,
@@ -134,16 +170,27 @@ export function mountControlPanel(
   const cards = makeEl("section", "cards");
 
   const gazeCard = featureCard(
-    "Gaze correction",
-    "Remap your eyes back toward the lens for natural eye contact.",
+    "Monitor Gaze Anchor",
+    "Hold a natural, attentive screen gaze instead of an intense lens stare.",
     makeSwitch(state.gaze_enabled, (v) => {
       state.gaze_enabled = v;
       emit();
     }),
-    sliderControl("Sensitivity", 0, 1, 0.02, state.gaze_sensitivity, (v) => {
-      state.gaze_sensitivity = v;
+    sliderControl("Attention vector", 0, 1, 0.02, state.gaze_attention, (v) => {
+      state.gaze_attention = v;
       emit();
     }),
+  );
+
+  const presenceCard = featureCard(
+    "Presence control",
+    "Pause or degrade your feed on demand — step away or fake a bad connection.",
+    null,
+    segmentedControl(PRESENCE_OPTIONS, state.presence, (v) => {
+      state.presence = v as PresenceMode;
+      emit();
+    }),
+    true,
   );
 
   const anonymiseCard = featureCard(
@@ -177,7 +224,7 @@ export function mountControlPanel(
     }),
   );
 
-  cards.append(gazeCard, anonymiseCard, backgroundCard, smoothingCard);
+  cards.append(gazeCard, presenceCard, anonymiseCard, backgroundCard, smoothingCard);
 
   const panel = makeEl("main", "panel");
   panel.append(preview, cards);

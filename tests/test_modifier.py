@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from faceray.core.modifier import Modifier
+from faceray.core.modifier import Modifier, PresenceMode
 from faceray.core.tracker import LEFT_EYE_RING, LEFT_IRIS
 from tests.conftest import make_face_landmarks, make_landmarks
 
@@ -136,7 +136,9 @@ def test_gaze_smoothing_blends_between_frames(frame: np.ndarray) -> None:
     """The EMA blends the previous shift with the new target, not snapping."""
     a = make_landmarks(seed=1)
     b = make_landmarks(seed=2)
-    m = Modifier(gaze_strength=0.7, gaze_smoothing=0.6)
+    # gaze_attention=0 anchors on the socket centre, so the target is exactly
+    # (socket - pupil) * strength (no downward attention offset to account for).
+    m = Modifier(gaze_strength=0.7, gaze_smoothing=0.6, gaze_attention=0.0)
 
     m.correct_gaze(frame, a)
     ema1 = m._shift_ema[LEFT_IRIS].copy()
@@ -158,3 +160,55 @@ def test_gaze_smoothing_state_cleared_on_disable(frame: np.ndarray) -> None:
     m.gaze_strength = 0.0
     m.correct_gaze(frame, lm)
     assert not m._shift_ema  # forgotten so re-enabling starts clean
+
+
+def test_gaze_attention_anchors_downward(frame: np.ndarray) -> None:
+    """A higher attention vector biases the recentre shift downward (screen gaze)."""
+    lm = make_face_landmarks()
+    flat = Modifier(gaze_strength=0.85, gaze_attention=0.0)
+    flat.correct_gaze(frame, lm)
+    y_flat = flat._shift_ema[LEFT_IRIS][1]
+
+    down = Modifier(gaze_strength=0.85, gaze_attention=0.8)
+    down.correct_gaze(frame, lm)
+    y_down = down._shift_ema[LEFT_IRIS][1]
+
+    assert y_down > y_flat + 1.0  # downward (positive y) anchor offset
+
+
+# -- Presence control ---------------------------------------------------------
+def test_pixelate_preserves_shape_and_blocks() -> None:
+    f = _noisy_frame(4)
+    out = Modifier.pixelate(f)
+    assert out.shape == f.shape and out.dtype == np.uint8
+    assert not np.array_equal(out, f)  # nearest-neighbour blocks alter detail
+
+
+def test_presence_live_is_passthrough() -> None:
+    m = Modifier(presence_mode=PresenceMode.LIVE)
+    f = np.full((90, 160, 3), 77, dtype=np.uint8)
+    assert m.present(f) is f
+
+
+def test_presence_freeze_holds_first_frame() -> None:
+    m = Modifier(presence_mode=PresenceMode.FREEZE)
+    f1 = np.full((90, 160, 3), 50, dtype=np.uint8)
+    f2 = np.full((90, 160, 3), 150, dtype=np.uint8)
+    first = m.present(f1)
+    assert np.array_equal(m.present(f2), first)  # keeps looping the held frame
+    assert int(first.mean()) == 50
+
+
+def test_presence_switch_clears_held_frame() -> None:
+    m = Modifier(presence_mode=PresenceMode.FREEZE)
+    m.present(np.full((90, 160, 3), 50, dtype=np.uint8))
+    assert m.is_frozen
+    m.presence_mode = PresenceMode.LIVE
+    assert not m.is_frozen  # switching modes drops the buffer
+
+
+def test_presence_stream_lowres_stays_live() -> None:
+    m = Modifier(presence_mode=PresenceMode.STREAM_LOWRES)
+    out = m.present(_noisy_frame(5))
+    assert out.shape == (480, 640, 3)
+    assert not m.is_frozen  # stream mode never freezes; motion stays live

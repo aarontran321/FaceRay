@@ -9,15 +9,27 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Presence / privacy state for the output frame. Serializes to the same
+/// snake_case strings the Python `PresenceMode` enum uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PresenceMode {
+    #[default]
+    Live,
+    Freeze,
+    FakeLowres,
+    StreamLowres,
+}
+
 /// Control-plane payload sent from the UI toward the Python sidecar.
 ///
 /// Serialized to a single line of JSON and written to the sidecar's stdin.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ControlState {
-    /// Eye-contact / gaze correction: on/off and its tracking sensitivity
-    /// (`[0, 1]`).
+    /// Monitor gaze anchor: on/off and the "attention vector" (`[0, 1]`) — how
+    /// far below eye-centre the natural screen gaze sits.
     pub gaze_enabled: bool,
-    pub gaze_sensitivity: f32,
+    pub gaze_attention: f32,
     /// Face anonymiser — heavy opaque blur over the face hull only.
     pub face_blur_enabled: bool,
     /// Depth-of-field background blur; the face stays crisp.
@@ -25,6 +37,8 @@ pub struct ControlState {
     /// Skin smoothing (beauty filter): on/off and its intensity (`[0, 1]`).
     pub smoothing_enabled: bool,
     pub smoothing_strength: f32,
+    /// Presence control (live / freeze / fake low-res / stream low-res).
+    pub presence: PresenceMode,
 }
 
 impl Default for ControlState {
@@ -32,11 +46,12 @@ impl Default for ControlState {
         // Matches faceray.core.Modifier defaults.
         Self {
             gaze_enabled: true,
-            gaze_sensitivity: 0.7,
+            gaze_attention: 0.35,
             face_blur_enabled: false,
             background_blur_enabled: false,
             smoothing_enabled: false,
             smoothing_strength: 0.5,
+            presence: PresenceMode::Live,
         }
     }
 }
@@ -69,5 +84,18 @@ mod tests {
         assert!(!state.face_blur_enabled);
         assert!(!state.background_blur_enabled);
         assert!(!state.smoothing_enabled);
+        assert_eq!(state.presence, PresenceMode::Live);
+    }
+
+    #[test]
+    fn presence_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&PresenceMode::FakeLowres).unwrap(),
+            "\"fake_lowres\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PresenceMode::StreamLowres).unwrap(),
+            "\"stream_lowres\""
+        );
     }
 }

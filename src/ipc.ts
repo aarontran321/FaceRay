@@ -9,10 +9,13 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+export type PresenceMode = "live" | "freeze" | "fake_lowres" | "stream_lowres";
+
 export interface ControlState {
-  /** Eye-contact / gaze correction: on/off and tracking sensitivity [0, 1]. */
+  /** Monitor gaze anchor: on/off and attention vector [0, 1] (screen-gaze
+   *  depth below eye centre). */
   gaze_enabled: boolean;
-  gaze_sensitivity: number;
+  gaze_attention: number;
   /** Face anonymiser — heavy opaque blur over the face only. */
   face_blur_enabled: boolean;
   /** Depth-of-field background blur; the face stays crisp. */
@@ -20,6 +23,8 @@ export interface ControlState {
   /** Skin smoothing (beauty filter): on/off and intensity [0, 1]. */
   smoothing_enabled: boolean;
   smoothing_strength: number;
+  /** Presence control (live / freeze / fake low-res / stream low-res). */
+  presence: PresenceMode;
 }
 
 /** True only when running inside the Tauri webview (not a bare browser tab). */

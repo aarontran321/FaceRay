@@ -100,21 +100,27 @@ see its docstring in `tracker.py` before changing its shape.
 
 The desktop app is a **Tauri 2.0** shell (Rust `src-tauri/`, TS `src/`) driving
 the Python CV core as a **sidecar** over stdio. Lighting/relighting was removed
-entirely; the product is four independent face-interaction features, all in
-`core/modifier.py`:
+entirely; the product is a set of face-interaction filters plus a presence state
+machine, all in `core/modifier.py`:
 
-1. **Gaze correction** (primary) — iris-recentre affine warp with a per-eye
-   temporal EMA (sensitivity-controlled) for jitter-free eye contact.
-2. **Face anonymizer** — heavy opaque Gaussian over the face hull only.
-3. **Background blur** — depth-of-field Gaussian outside the hull; face crisp.
-4. **Face smoothing** — bilateral filter over the skin mask (eyes/mouth carved
+1. **Monitor gaze anchor** (primary) — iris-recentre affine warp anchored
+   *below* the eye centre (attention vector) with a per-eye temporal EMA, so the
+   user reads as attentively looking at the screen (not a lens stare) with a
+   little live micro-drift.
+2. **Presence control** — `PresenceMode` state machine: LIVE / FREEZE (loop the
+   last processed frame) / FAKE_LOWRES (freeze + nearest-neighbour pixelation) /
+   STREAM_LOWRES (live but continuously pixelated). The sidecar skips the
+   tracker+filter work while a FREEZE/FAKE frame is held (`Modifier.is_frozen`).
+3. **Face anonymizer** — heavy opaque Gaussian over the face hull only.
+4. **Background blur** — depth-of-field Gaussian outside the hull; face crisp.
+5. **Face smoothing** — bilateral filter over the skin mask (eyes/mouth carved
    out to keep lashes/lips sharp).
 
 `ControlState` is the single control-plane contract. Keep the three mirrors in
 lockstep: `src-tauri/src/ipc.rs` ↔ `src/ipc.ts` ↔ `faceray/sidecar_entry.py`
-(`SidecarControl`). Fields: `gaze_enabled`, `gaze_sensitivity`,
+(`SidecarControl`). Fields: `gaze_enabled`, `gaze_attention`,
 `face_blur_enabled`, `background_blur_enabled`, `smoothing_enabled`,
-`smoothing_strength`.
+`smoothing_strength`, `presence` (live/freeze/fake_lowres/stream_lowres).
 
 - **Sidecar** (`faceray/sidecar_entry.py`): non-blocking stdin JSON reads via a
   daemon thread; graceful shutdown on stdin EOF / SIGTERM; native hi-res mirrored
@@ -123,9 +129,10 @@ lockstep: `src-tauri/src/ipc.rs` ↔ `src/ipc.ts` ↔ `faceray/sidecar_entry.py`
   (`drivers/preview_server.py`, `--preview`; URL announced in the `ready` event)
   that the webview's `<img>` pulls directly — no frame data crosses the Rust/TS
   IPC. Near-lossless (JPEG q95); the UI preview is a fixed 16:9 container.
-- **Frontend** (`src/ui.ts`): a preview pane plus a grid of four feature cards
-  (switch + optional slider each), dispatching debounced `ControlState` via the
-  typed client. Framework-free DOM, macOS-styled.
+- **Frontend** (`src/ui.ts`): a preview pane plus a grid of feature cards (switch
+  + optional slider, or a segmented control for presence — `card--wide` spans the
+  grid), dispatching debounced `ControlState` via the typed client. Framework-free
+  DOM, macOS-styled.
 - macOS camera access needs `NSCameraUsageDescription` (`src-tauri/Info.plist`)
   for the packaged app, or terminal Camera permission for `tauri dev`.
 

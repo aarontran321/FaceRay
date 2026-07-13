@@ -43,26 +43,32 @@ import cv2
 import numpy as np
 
 from faceray.core import FaceTracker, Modifier
+from faceray.core.modifier import PresenceMode
 from faceray.drivers import VirtualSink
 from faceray.drivers.preview_server import PreviewServer
 from faceray.drivers.virtual_sink import VirtualSinkError
+
+# Firm internal anchoring strength; the UI exposes the attention vector, not this.
+# Below 1.0 so a little live micro-drift keeps the eyes from looking frozen.
+_GAZE_HOLD_STRENGTH: float = 0.85
 
 
 @dataclass
 class SidecarControl:
     """Control-plane state received from the UI. Mirrors Rust/TS ``ControlState``.
 
-    Four independent face-interaction features; no lighting. Defaults match the
-    :class:`~faceray.core.Modifier` constructor so the first frame (before any
-    control message) is well defined.
+    Face-interaction features plus a presence/privacy mode; no lighting. Defaults
+    match the :class:`~faceray.core.Modifier` constructor so the first frame
+    (before any control message) is well defined.
     """
 
     gaze_enabled: bool = True
-    gaze_sensitivity: float = 0.7
+    gaze_attention: float = 0.35
     face_blur_enabled: bool = False
     background_blur_enabled: bool = False
     smoothing_enabled: bool = False
     smoothing_strength: float = 0.5
+    presence: str = PresenceMode.LIVE.value
 
     @classmethod
     def from_dict(
@@ -74,9 +80,11 @@ class SidecarControl:
         single changed field still produces a valid, fully-populated state.
         """
         base = base or cls()
+        presence = str(data.get("presence", base.presence))
+        PresenceMode(presence)  # validate now so bad values are rejected on parse
         return cls(
             gaze_enabled=bool(data.get("gaze_enabled", base.gaze_enabled)),
-            gaze_sensitivity=float(data.get("gaze_sensitivity", base.gaze_sensitivity)),
+            gaze_attention=float(data.get("gaze_attention", base.gaze_attention)),
             face_blur_enabled=bool(data.get("face_blur_enabled", base.face_blur_enabled)),
             background_blur_enabled=bool(
                 data.get("background_blur_enabled", base.background_blur_enabled)
@@ -85,6 +93,7 @@ class SidecarControl:
             smoothing_strength=float(
                 data.get("smoothing_strength", base.smoothing_strength)
             ),
+            presence=presence,
         )
 
     @classmethod
@@ -96,20 +105,23 @@ class SidecarControl:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "gaze_enabled": self.gaze_enabled,
-            "gaze_sensitivity": self.gaze_sensitivity,
+            "gaze_attention": self.gaze_attention,
             "face_blur_enabled": self.face_blur_enabled,
             "background_blur_enabled": self.background_blur_enabled,
             "smoothing_enabled": self.smoothing_enabled,
             "smoothing_strength": self.smoothing_strength,
+            "presence": self.presence,
         }
 
     def apply(self, modifier: Modifier) -> None:
         """Push this control state onto the live pipeline engine."""
-        modifier.gaze_strength = self.gaze_sensitivity if self.gaze_enabled else 0.0
+        modifier.gaze_strength = _GAZE_HOLD_STRENGTH if self.gaze_enabled else 0.0
+        modifier.gaze_attention = self.gaze_attention
         modifier.face_blur_enabled = self.face_blur_enabled
         modifier.background_blur_enabled = self.background_blur_enabled
         modifier.smoothing_enabled = self.smoothing_enabled
         modifier.smoothing_strength = self.smoothing_strength
+        modifier.presence_mode = PresenceMode(self.presence)
 
 
 class Sidecar:
@@ -273,15 +285,28 @@ class Sidecar:
             frame = cv2.flip(frame, 1)
         return frame
 
-    def _process(
-        self, frame: np.ndarray, state: SidecarControl
-    ) -> Tuple[np.ndarray, bool]:
+    def _process(self, frame: np.ndarray) -> Tuple[np.ndarray, bool]:
+        """Run the face-interaction filter chain (control already applied)."""
         assert self._tracker is not None
-        state.apply(self._modifier)
         landmarks = self._tracker.process(frame)
         if landmarks is None:
             return frame, False
         return self._modifier.apply(frame, landmarks), True
+
+    def _process_and_present(
+        self, frame: np.ndarray, state: SidecarControl
+    ) -> Tuple[np.ndarray, bool]:
+        """Apply control, then produce the output frame under the presence mode.
+
+        While a FREEZE / FAKE_LOWRES frame is already held, skip the expensive
+        tracker+filter work entirely and re-serve the held frame — the live feed
+        is genuinely paused.
+        """
+        state.apply(self._modifier)
+        if self._modifier.is_frozen:
+            return self._modifier.present(frame), False
+        processed, face = self._process(frame)
+        return self._modifier.present(processed), face
 
     def _pace(self, frame_start: float) -> None:
         if self._args.fps <= 0:
@@ -330,17 +355,17 @@ class Sidecar:
 
                 with self._lock:
                     state = self._state
-                processed, face = self._process(frame, state)
+                output, face = self._process_and_present(frame, state)
 
                 if self._sink is not None:
                     try:
-                        self._sink.send(processed)
+                        self._sink.send(output)
                     except VirtualSinkError as exc:
                         self._emit({"type": "warning", "message": f"sink lost: {exc}"})
                         self._sink = None
 
                 if self._preview is not None:
-                    self._preview.update(processed)
+                    self._preview.update(output)
 
                 frames += 1
                 dt = time.perf_counter() - t0

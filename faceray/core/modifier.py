@@ -21,6 +21,7 @@ its inputs are degenerate):
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Optional, Tuple
 
 import cv2
@@ -35,37 +36,62 @@ from faceray.core.tracker import (
     RIGHT_IRIS,
 )
 
+# How far the gaze anchor sits below the eye-socket centre, as a fraction of the
+# eye's vertical extent, at attention == 1.0. Tuned so a mid setting reads as
+# "attentively looking at the monitor" rather than a lens stare.
+_ATTENTION_SCALE: float = 0.6
+
+# Downscale target for the nearest-neighbour "low-res" pixelation (16:9).
+_PIXELATE_BLOCKS: Tuple[int, int] = (160, 90)
+
+
+class PresenceMode(Enum):
+    """Presence / privacy state for the output frame."""
+
+    LIVE = "live"                    # normal live processed feed
+    FREEZE = "freeze"                # hold the last processed frame
+    FAKE_LOWRES = "fake_lowres"      # hold a pixelated frame (fake bad network)
+    STREAM_LOWRES = "stream_lowres"  # live but continuously pixelated
+
 
 class Modifier:
     """Gaze correction, skin smoothing, and identity/background blur.
 
     Args:
         gaze_strength: Fraction of the measured pupil displacement corrected,
-            in ``[0, 1]`` (the UI "sensitivity"). ``0`` disables correction.
+            in ``[0, 1]``. ``0`` disables correction. Held firm internally; a
+            value below 1 leaves a little live micro-drift so eyes stay alive.
         gaze_max_shift: Hard cap (in pixels) on per-eye translation to keep the
             warp stable when tracking is noisy.
         gaze_smoothing: Temporal EMA inertia in ``[0, 0.98]`` applied to the
             per-eye shift; higher is steadier, lower is snappier.
+        gaze_attention: "Attention vector" in ``[0, 1]`` — how far below the eye
+            centre the gaze anchor sits, so the user reads as attentively looking
+            at their monitor rather than staring into the lens.
         face_blur_enabled: Apply the heavy face-anonymiser blur.
         background_blur_enabled: Apply the background depth-of-field blur.
         smoothing_enabled: Apply the skin-smoothing beauty filter.
         smoothing_strength: Smoothing intensity in ``[0, 1]``.
+        presence_mode: Initial :class:`PresenceMode`.
     """
 
     def __init__(
         self,
         *,
-        gaze_strength: float = 0.7,
-        gaze_max_shift: float = 12.0,
+        gaze_strength: float = 0.85,
+        gaze_max_shift: float = 14.0,
         gaze_smoothing: float = 0.6,
+        gaze_attention: float = 0.35,
         face_blur_enabled: bool = False,
         background_blur_enabled: bool = False,
         smoothing_enabled: bool = False,
         smoothing_strength: float = 0.5,
+        presence_mode: PresenceMode = PresenceMode.LIVE,
     ) -> None:
         self.gaze_strength = gaze_strength
         self.gaze_max_shift = float(max(0.0, gaze_max_shift))
         self.gaze_smoothing = gaze_smoothing
+        self.gaze_attention = gaze_attention
         self.face_blur_enabled = bool(face_blur_enabled)
         self.background_blur_enabled = bool(background_blur_enabled)
         self.smoothing_enabled = bool(smoothing_enabled)
@@ -73,6 +99,10 @@ class Modifier:
 
         # Per-eye EMA of the recentre shift vector, keyed by iris landmark set.
         self._shift_ema: dict[Tuple[int, ...], np.ndarray] = {}
+
+        # Presence state machine: the held frame for FREEZE / FAKE_LOWRES.
+        self._presence_mode = presence_mode
+        self._frozen: Optional[np.ndarray] = None
 
     # -- Configuration ------------------------------------------------------
     @property
@@ -99,6 +129,34 @@ class Modifier:
     @smoothing_strength.setter
     def smoothing_strength(self, value: float) -> None:
         self._smoothing_strength = float(np.clip(value, 0.0, 1.0))
+
+    @property
+    def gaze_attention(self) -> float:
+        """Attention vector in ``[0, 1]`` — anchor depth below the eye centre."""
+        return self._gaze_attention
+
+    @gaze_attention.setter
+    def gaze_attention(self, value: float) -> None:
+        self._gaze_attention = float(np.clip(value, 0.0, 1.0))
+
+    @property
+    def presence_mode(self) -> PresenceMode:
+        return self._presence_mode
+
+    @presence_mode.setter
+    def presence_mode(self, mode: PresenceMode) -> None:
+        # Switching modes drops the held frame so a fresh one is captured.
+        if mode is not self._presence_mode:
+            self._frozen = None
+        self._presence_mode = mode
+
+    @property
+    def is_frozen(self) -> bool:
+        """True when a held frame already exists for FREEZE / FAKE_LOWRES."""
+        return (
+            self._presence_mode in (PresenceMode.FREEZE, PresenceMode.FAKE_LOWRES)
+            and self._frozen is not None
+        )
 
     # -- Public pipeline ----------------------------------------------------
     def apply(self, frame_bgr: np.ndarray, landmarks: FaceLandmarks) -> np.ndarray:
@@ -135,12 +193,21 @@ class Modifier:
     ) -> np.ndarray:
         pupil = landmarks.centroid(iris_idx)
         socket = landmarks.centroid(ring_idx)
-        offset = socket - pupil  # vector that moves the pupil to centre
-        target = offset * self._gaze_strength
+
+        # Monitor gaze anchor: instead of the dead-centre socket, anchor the iris
+        # slightly *below* centre (horizontally centred) so the user reads as
+        # attentively looking at their screen, not staring into the lens. The
+        # drop scales with the eye's own height and the attention vector.
+        ring = landmarks.pixels[list(ring_idx)]
+        eye_height = float(np.ptp(ring[:, 1]))
+        anchor = socket.copy()
+        anchor[1] += self._gaze_attention * _ATTENTION_SCALE * eye_height
+        target = (anchor - pupil) * self._gaze_strength
 
         # Blend toward the target with an exponential moving average so noisy
         # frame-to-frame landmark wobble doesn't jitter the warp; the pupil
-        # glides smoothly to the centre anchor and back as the gaze shifts.
+        # glides smoothly to the anchor and back, leaving a little live
+        # micro-drift (gaze_strength < 1) so the eyes never look frozen.
         prev = self._shift_ema.get(iris_idx)
         if prev is None:
             smoothed = target.astype(np.float32)
@@ -336,3 +403,38 @@ class Modifier:
         """Nearest odd integer >= 3 (Gaussian kernels must be odd)."""
         v = max(3, int(value))
         return v if v % 2 == 1 else v + 1
+
+    # -- Presence control ---------------------------------------------------
+    @staticmethod
+    def pixelate(frame_bgr: np.ndarray) -> np.ndarray:
+        """Nearest-neighbour downscale→upscale for heavy pixel-block artifacts."""
+        h, w = frame_bgr.shape[:2]
+        small = cv2.resize(frame_bgr, _PIXELATE_BLOCKS, interpolation=cv2.INTER_NEAREST)
+        return cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+
+    def present(self, frame_bgr: np.ndarray) -> np.ndarray:
+        """Apply the current presence mode to a (already processed) frame.
+
+        * ``LIVE`` — pass through.
+        * ``STREAM_LOWRES`` — pixelate every live frame (motion stays fluid).
+        * ``FREEZE`` — capture the frame once, then loop it.
+        * ``FAKE_LOWRES`` — capture a pixelated frame once, then loop it.
+
+        Switching modes clears the held frame (see :meth:`presence_mode`), so the
+        next call re-captures.
+        """
+        mode = self._presence_mode
+        if mode is PresenceMode.LIVE:
+            self._frozen = None
+            return frame_bgr
+        if mode is PresenceMode.STREAM_LOWRES:
+            self._frozen = None
+            return self.pixelate(frame_bgr)
+        if mode is PresenceMode.FREEZE:
+            if self._frozen is None:
+                self._frozen = frame_bgr.copy()
+            return self._frozen
+        # FAKE_LOWRES
+        if self._frozen is None:
+            self._frozen = self.pixelate(frame_bgr)
+        return self._frozen

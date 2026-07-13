@@ -6,7 +6,7 @@ import json
 import subprocess
 import sys
 
-from faceray.core.modifier import Modifier
+from faceray.core.modifier import Modifier, PresenceMode
 from faceray.sidecar_entry import SidecarControl
 
 
@@ -14,30 +14,39 @@ def test_from_dict_full_payload() -> None:
     c = SidecarControl.from_dict(
         {
             "gaze_enabled": False,
-            "gaze_sensitivity": 0.4,
+            "gaze_attention": 0.4,
             "face_blur_enabled": True,
             "background_blur_enabled": True,
             "smoothing_enabled": True,
             "smoothing_strength": 0.8,
+            "presence": "fake_lowres",
         }
     )
     assert c.gaze_enabled is False
-    assert c.gaze_sensitivity == 0.4
+    assert c.gaze_attention == 0.4
     assert c.face_blur_enabled is True
     assert c.smoothing_strength == 0.8
+    assert c.presence == "fake_lowres"
 
 
 def test_from_dict_partial_inherits_base() -> None:
     base = SidecarControl(smoothing_strength=0.9, face_blur_enabled=True)
-    merged = SidecarControl.from_dict({"gaze_enabled": False}, base=base)
+    merged = SidecarControl.from_dict({"presence": "freeze"}, base=base)
     assert merged.smoothing_strength == 0.9  # inherited
     assert merged.face_blur_enabled is True  # inherited
-    assert merged.gaze_enabled is False  # overridden
+    assert merged.presence == "freeze"  # overridden
+
+
+def test_from_dict_rejects_bad_presence() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        SidecarControl.from_dict({"presence": "sideways"})
 
 
 def test_from_json_roundtrips_through_to_dict() -> None:
     original = SidecarControl(
-        gaze_sensitivity=0.55, smoothing_enabled=True, background_blur_enabled=True
+        gaze_attention=0.55, smoothing_enabled=True, presence="stream_lowres"
     )
     clone = SidecarControl.from_json(json.dumps(original.to_dict()))
     assert clone == original
@@ -47,25 +56,29 @@ def test_apply_pushes_state_onto_modifier() -> None:
     modifier = Modifier()
     control = SidecarControl(
         gaze_enabled=False,
-        gaze_sensitivity=0.9,
+        gaze_attention=0.4,
         face_blur_enabled=True,
         background_blur_enabled=True,
         smoothing_enabled=True,
         smoothing_strength=0.7,
+        presence="stream_lowres",
     )
     control.apply(modifier)
 
     assert modifier.gaze_strength == 0.0  # gaze disabled -> strength zeroed
+    assert modifier.gaze_attention == 0.4
     assert modifier.face_blur_enabled is True
     assert modifier.background_blur_enabled is True
     assert modifier.smoothing_enabled is True
     assert modifier.smoothing_strength == 0.7
+    assert modifier.presence_mode is PresenceMode.STREAM_LOWRES
 
 
-def test_apply_gaze_sensitivity_maps_to_strength() -> None:
+def test_apply_gaze_enabled_holds_firm() -> None:
     modifier = Modifier()
-    SidecarControl(gaze_enabled=True, gaze_sensitivity=0.35).apply(modifier)
-    assert modifier.gaze_strength == 0.35
+    SidecarControl(gaze_enabled=True, gaze_attention=0.35).apply(modifier)
+    assert modifier.gaze_strength > 0.0  # firm internal hold
+    assert modifier.gaze_attention == 0.35
 
 
 def _run_sidecar(control_lines: list[str], extra_args: list[str]) -> list[dict]:
