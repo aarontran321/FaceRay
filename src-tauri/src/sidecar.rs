@@ -47,7 +47,10 @@ pub fn spawn(app: &AppHandle) -> Result<(), String> {
     let command = app
         .shell()
         .sidecar("faceray_backend")
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| err.to_string())?
+        // Enable the loopback MJPEG preview the webview displays. Frame data
+        // never crosses this IPC boundary — the webview pulls it over 127.0.0.1.
+        .args(["--preview"]);
     let (mut rx, child) = command.spawn().map_err(|err| err.to_string())?;
     app.state::<SidecarState>().store(child);
 

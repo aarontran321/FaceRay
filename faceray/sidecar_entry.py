@@ -45,6 +45,7 @@ import numpy as np
 from faceray.core import FaceTracker, Modifier, Relighter
 from faceray.core.modifier import BlurMode
 from faceray.drivers import VirtualSink
+from faceray.drivers.preview_server import PreviewServer
 from faceray.drivers.virtual_sink import VirtualSinkError
 
 # Gaze strength applied when gaze correction is enabled (matches app.py).
@@ -140,6 +141,7 @@ class Sidecar:
         self._still: Optional[np.ndarray] = None  # image / synthetic source frame
         self._tracker: Optional[FaceTracker] = None
         self._sink: Optional[VirtualSink] = None
+        self._preview: Optional[PreviewServer] = None
 
     # -- stdio helpers ------------------------------------------------------
     def _emit(self, obj: Dict[str, Any]) -> None:
@@ -194,9 +196,24 @@ class Sidecar:
         self._args.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or h
         return True
 
+    def _error_frame(self, text: str) -> np.ndarray:
+        h, w = self._args.height, self._args.width
+        frame = np.full((h, w, 3), 20, dtype=np.uint8)
+        cv2.putText(frame, text, (32, h // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                    min(1.0, w / 900.0), (60, 120, 255), 2, cv2.LINE_AA)
+        return frame
+
     def _setup(self) -> bool:
         if not self._open_source():
-            return False
+            # With a live preview we keep running and show why in-frame, so the
+            # UI stays connected instead of the window going dead.
+            if self._args.preview and not self._args.image and not self._args.synthetic:
+                self._still = self._error_frame(
+                    "Camera unavailable - check macOS Camera permission"
+                )
+                self._emit({"type": "warning", "message": "camera unavailable; showing placeholder"})
+            else:
+                return False
 
         static = self._still is not None
         self._tracker = FaceTracker(
@@ -212,9 +229,19 @@ class Sidecar:
             except VirtualSinkError as exc:
                 self._emit({"type": "warning", "message": str(exc)})
                 self._sink = None
+
+        if self._args.preview:
+            self._preview = PreviewServer(
+                port=self._args.preview_port,
+                quality=self._args.preview_quality,
+                max_width=self._args.preview_width,
+            ).start()
+            self._log(f"preview stream: {self._preview.url}")
         return True
 
     def _teardown(self) -> None:
+        if self._preview is not None:
+            self._preview.stop()
         if self._sink is not None:
             self._sink.close()
         if self._tracker is not None:
@@ -292,6 +319,7 @@ class Sidecar:
             "height": self._args.height,
             "gpu": self._relighter.gpu_active,
             "sink": self._sink.device_name if self._sink is not None else None,
+            "preview": self._preview.url if self._preview is not None else None,
             "state": initial,
         })
 
@@ -317,6 +345,9 @@ class Sidecar:
                     except VirtualSinkError as exc:
                         self._emit({"type": "warning", "message": f"sink lost: {exc}"})
                         self._sink = None
+
+                if self._preview is not None:
+                    self._preview.update(processed)
 
                 frames += 1
                 dt = time.perf_counter() - t0
@@ -350,6 +381,14 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="Force the CPU (NumPy) shading path.")
     parser.add_argument("--no-sink", action="store_true",
                         help="Skip the virtual camera (process frames only).")
+    parser.add_argument("--preview", action="store_true",
+                        help="Serve an MJPEG preview of the processed feed on loopback.")
+    parser.add_argument("--preview-port", type=int, default=0,
+                        help="Preview TCP port (0 = OS-assigned).")
+    parser.add_argument("--preview-quality", type=int, default=70,
+                        help="Preview JPEG quality (1-100).")
+    parser.add_argument("--preview-width", type=int, default=640,
+                        help="Max preview width in pixels (downscale above this).")
     parser.add_argument("--image", type=str, default=None,
                         help="Loop a static image instead of the webcam (testing).")
     parser.add_argument("--synthetic", action="store_true",

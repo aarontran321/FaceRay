@@ -50,7 +50,8 @@ faceray/                  # Python CV core (data plane) + CLI
 │   ├── relighter.py      # CUDA/CuPy Lambertian shading & surface normals
 │   └── modifier.py       # Gaze correction & Gaussian blur masks
 ├── drivers/
-│   └── virtual_sink.py   # pyvirtualcam bridge to OS video loops
+│   ├── virtual_sink.py   # pyvirtualcam bridge to OS video loops
+│   └── preview_server.py # loopback MJPEG preview of processed frames
 ├── app.py                # CLI orchestration loop and OpenCV UI
 ├── sidecar_entry.py      # Tauri sidecar: stdio-controlled headless pipeline
 ├── requirements.txt      # core runtime (cross-platform, CPU path)
@@ -61,8 +62,9 @@ src/                      # desktop control-panel frontend (Vite + TypeScript)
 │   ├── ui.ts             # control-panel widgets (sliders / switches / segmented)
 │   └── ipc.ts            # typed control-plane client (mirrors Rust ControlState)
 src-tauri/                # Tauri 2.0 desktop shell (Rust; window + process mgmt)
-│   ├── src/{main,lib,ipc}.rs   # entry, command surface, ControlState contract
+│   ├── src/{main,lib,ipc,sidecar}.rs  # entry, commands, contract, process mgmt
 │   ├── capabilities/     # scoped permissions (sidecar spawn)
+│   ├── Info.plist        # macOS camera-usage + local-networking entitlements
 │   └── tauri.conf.json   # window + bundled faceray_backend sidecar config
 scripts/
 ├── capture_selfcheck.py  # headless one-frame pipeline check -> montage PNG
@@ -171,16 +173,44 @@ control that dispatch debounced `ControlState` updates through the typed IPC
 client. Verified via `cargo check` + `cargo test`, `vite build`, a 30-test
 `pytest` suite, and interactive UI checks.
 
-The control panel (light sliders, effect switches, blur segmented control):
+The control panel (live preview on top; light sliders, effect switches, blur
+segmented control below):
 
 ```
 ┌ FaceRay ───────────────── 30 fps · face ✓ ┐
+│ ┌────────── live camera preview ─────────┐ │
+│ └────────────────────────────────────────┘ │
 │ LIGHT                                      │
 │   Direction X / Y / Z   Intensity  Ambient │
 │ EFFECTS                                     │
 │   Relighting ●   Gaze ●   Blur [Off|Face|Bg]│
 └────────────────────────────────────────────┘
 ```
+
+### Live preview
+
+The window shows your **processed** camera feed so you can see each effect
+apply in real time. To keep heavy frame data off the control-plane IPC, the
+sidecar exposes the processed frames as an **MJPEG stream bound to loopback**
+(`http://127.0.0.1:<port>/stream`, port announced in its `ready` event) and the
+webview's `<img>` pulls that stream directly — nothing marshals through Rust or
+TypeScript. Try it without the app or a camera:
+
+```bash
+{ echo '{"blur_mode":"background"}'; sleep 60; } \
+  | python -m faceray.sidecar_entry --image portrait.jpg --no-sink \
+        --preview --preview-port 8791
+# then open http://127.0.0.1:8791/ in a browser
+```
+
+### Camera permission (macOS)
+
+macOS gates camera access per app. The packaged app ships an
+[`Info.plist`](src-tauri/Info.plist) with `NSCameraUsageDescription`, so it
+prompts on first use. For `npm run tauri dev`, the **terminal** you launch from
+is the responsible process — grant it access under **System Settings → Privacy
+& Security → Camera**, then restart the terminal. If the camera is unavailable,
+the preview shows a placeholder message instead of the window going dark.
 
 ## Testing
 

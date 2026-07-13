@@ -11,6 +11,8 @@ import type { BlurMode, ControlState } from "./ipc";
 export interface PanelHandle {
   /** Update the small live-status readout in the title bar. */
   setStatus(text: string): void;
+  /** Point the preview at the sidecar's MJPEG stream URL, or clear it. */
+  setPreview(url: string | null): void;
 }
 
 type Bridge = "tauri" | "browser";
@@ -149,6 +151,21 @@ export function mountControlPanel(
 
   const panel = makeEl("main", "panel");
 
+  const preview = makeEl("figure", "preview");
+  const previewImg = makeEl("img", "preview__img");
+  previewImg.alt = "Live processed camera preview";
+  const previewNote = makeEl(
+    "figcaption",
+    "preview__note",
+    bridge === "tauri" ? "waiting for camera…" : "preview runs in the desktop app",
+  );
+  previewImg.addEventListener("error", () => {
+    previewImg.classList.remove("preview__img--on");
+    previewNote.hidden = false;
+    previewNote.textContent = "preview unavailable";
+  });
+  preview.append(previewImg, previewNote);
+
   const light = group("Light");
   light.append(
     sliderRow("Direction X", -1, 1, 0.05, state.light_x, (v) => {
@@ -189,12 +206,23 @@ export function mountControlPanel(
     }),
   );
 
-  panel.append(light, effects);
+  panel.append(preview, light, effects);
   root.append(titlebar, panel);
 
   return {
     setStatus(text: string) {
       statusEl.textContent = text;
+    },
+    setPreview(url: string | null) {
+      if (url === null) {
+        previewImg.removeAttribute("src");
+        previewImg.classList.remove("preview__img--on");
+        previewNote.hidden = false;
+        return;
+      }
+      previewImg.src = url;
+      previewImg.classList.add("preview__img--on");
+      previewNote.hidden = true;
     },
   };
 }

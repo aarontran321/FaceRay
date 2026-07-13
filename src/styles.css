@@ -88,6 +88,41 @@ body {
   gap: 16px;
 }
 
+/* ── Preview ────────────────────────────────────────────────────────── */
+.preview {
+  position: relative;
+  margin: 0;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+.preview__img--on {
+  display: block;
+}
+
+.preview__note {
+  position: absolute;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  padding: 0 12px;
+  text-align: center;
+}
+
 .group {
   background: var(--group);
   border: 1px solid var(--hairline);

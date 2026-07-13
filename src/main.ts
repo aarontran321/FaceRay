@@ -34,6 +34,7 @@ interface StatusEvent {
   fps?: number;
   face?: boolean;
   sink?: string | null;
+  preview?: string | null;
   message?: string;
 }
 
@@ -73,6 +74,7 @@ async function boot(): Promise<void> {
         panel.setStatus(`${msg.fps ?? "?"} fps · face ${msg.face ? "✓" : "—"}`);
         break;
       case "ready":
+        panel.setPreview(msg.preview ?? null);
         panel.setStatus(msg.sink ? `sink: ${msg.sink}` : "no virtual cam");
         break;
       case "warning":

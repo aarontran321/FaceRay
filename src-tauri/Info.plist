@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Shown in the macOS Camera permission prompt. Required, or macOS denies
+         camera access to the app (and its sidecar) and terminates the process. -->
+    <key>NSCameraUsageDescription</key>
+    <string>FaceRay uses your camera to generate the enhanced virtual-camera video feed.</string>
+
+    <!-- Allow the webview to load the sidecar's loopback MJPEG preview stream
+         (http://127.0.0.1) despite App Transport Security's HTTPS default. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+</dict>
+</plist>
